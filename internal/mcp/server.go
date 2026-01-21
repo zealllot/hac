@@ -167,14 +167,16 @@ func (s *Server) getTools() []Tool {
 		},
 		{
 			Name: "search_devices",
-			Description: `按关键词搜索设备。支持搜索 entity_id 和设备名称。
+			Description: `按关键词搜索设备。支持搜索 entity_id、设备名称和区域。
 
 示例：
-- 搜索 "衣帽间" 会返回所有名称包含"衣帽间"的设备
+- 搜索 "衣帽间" 会返回所有区域是衣帽间的设备
 - 搜索 "light" 会返回所有灯类设备
 - 搜索 "客厅 灯" 会返回客厅的灯
 
-推荐在创建自动化前使用此工具确认设备的 entity_id。`,
+推荐在创建自动化前使用此工具确认设备的 entity_id。
+
+⚠️ 重要：必须向用户展示搜索返回的【全部】设备列表，不要只展示"主要的"或"部分"结果。用户需要看到完整列表才能做出正确选择。`,
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
