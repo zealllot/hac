@@ -191,6 +191,26 @@ func (c *Client) DeleteAutomation(id string) error {
 	return err
 }
 
+// CreateTemplateSensor creates a template sensor via the HA config API
+// Note: This requires the template integration to be set up in configuration.yaml
+// or using the UI-based template helpers
+func (c *Client) CreateInputNumber(config map[string]any) error {
+	_, err := c.doRequest("POST", "/api/config/input_number", config)
+	return err
+}
+
+// SetState sets the state of an entity (useful for template sensors or input helpers)
+func (c *Client) SetState(entityID string, state string, attributes map[string]any) error {
+	body := map[string]any{
+		"state": state,
+	}
+	if attributes != nil {
+		body["attributes"] = attributes
+	}
+	_, err := c.doRequest("POST", "/api/states/"+entityID, body)
+	return err
+}
+
 func (c *Client) GetDevices() (map[string]DeviceCapability, error) {
 	states, err := c.GetStates()
 	if err != nil {
@@ -279,4 +299,34 @@ func (c *Client) getEntityAreas(states []EntityState) map[string]string {
 		}
 	}
 	return areas
+}
+
+// ReloadIntegration reloads a specific integration's configuration
+// Common domains: homeassistant, automation, script, scene, template, input_boolean, etc.
+func (c *Client) ReloadIntegration(domain string) error {
+	_, err := c.doRequest("POST", fmt.Sprintf("/api/services/%s/reload", domain), map[string]any{})
+	if err != nil {
+		return fmt.Errorf("reload %s: %w", domain, err)
+	}
+	return nil
+}
+
+// ReloadConfigEntry reloads a specific config entry by its entry_id
+func (c *Client) ReloadConfigEntry(entryID string) error {
+	_, err := c.doRequest("POST", "/api/services/homeassistant/reload_config_entry", map[string]any{
+		"entry_id": entryID,
+	})
+	if err != nil {
+		return fmt.Errorf("reload config entry %s: %w", entryID, err)
+	}
+	return nil
+}
+
+// ReloadAll reloads all reloadable integrations
+func (c *Client) ReloadAll() error {
+	_, err := c.doRequest("POST", "/api/services/homeassistant/reload_all", map[string]any{})
+	if err != nil {
+		return fmt.Errorf("reload all: %w", err)
+	}
+	return nil
 }

@@ -394,6 +394,143 @@ IR 格式示例：
 				Required: []string{"file_path"},
 			},
 		},
+		{
+			Name: "create_template_sensor",
+			Description: `创建一个 Template Sensor（模板传感器）。
+
+Template Sensor 可以通过 Jinja2 模板动态计算值，常用于：
+- 聚合多个传感器的数据（如计算平均值、最大值）
+- 基于条件过滤数据（如只取未开灯房间的光照）
+- 创建虚拟传感器
+
+参数说明：
+- name: 传感器名称（如 "全局参考光照"）
+- unique_id: 唯一标识符（如 "global_reference_illumination"）
+- state_template: Jinja2 模板，计算传感器的值
+- unit: 单位（如 "lx"）
+- device_class: 设备类型（如 "illuminance"）
+
+注意：此工具通过 HA 的 POST /api/states 接口创建传感器，
+传感器会在 HA 重启后消失。如需持久化，需要在 configuration.yaml 中配置。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"name": {
+						Type:        "string",
+						Description: "传感器名称",
+					},
+					"unique_id": {
+						Type:        "string",
+						Description: "唯一标识符，用于生成 entity_id",
+					},
+					"state_template": {
+						Type:        "string",
+						Description: "Jinja2 模板，用于计算传感器的值",
+					},
+					"unit": {
+						Type:        "string",
+						Description: "单位，如 lx, °C, %",
+					},
+					"device_class": {
+						Type:        "string",
+						Description: "设备类型，如 illuminance, temperature, humidity",
+					},
+				},
+				Required: []string{"name", "unique_id", "state_template"},
+			},
+		},
+		{
+			Name: "update_template_sensor",
+			Description: `更新一个 Template Sensor 的值。
+
+通过执行模板计算并更新传感器状态。适用于需要定期刷新的模板传感器。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"entity_id": {
+						Type:        "string",
+						Description: "传感器的 entity_id，如 sensor.global_reference_illumination",
+					},
+					"state_template": {
+						Type:        "string",
+						Description: "Jinja2 模板，用于计算新的值",
+					},
+				},
+				Required: []string{"entity_id", "state_template"},
+			},
+		},
+		{
+			Name: "render_template",
+			Description: `执行一个 Jinja2 模板并返回结果。
+
+用于测试模板是否正确，或获取模板计算的值。
+
+示例模板：
+- 获取光照值：{{ states('sensor.xxx_illumination') }}
+- 计算最大值：{{ [states('sensor.a')|float, states('sensor.b')|float] | max }}
+- 条件过滤：{% if is_state('light.xxx', 'off') %}{{ states('sensor.xxx') }}{% endif %}`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"template": {
+						Type:        "string",
+						Description: "Jinja2 模板字符串",
+					},
+				},
+				Required: []string{"template"},
+			},
+		},
+		{
+			Name: "reload_integration",
+			Description: `重新加载指定集成的配置。
+
+常用的 domain 参数：
+- homeassistant: 重新加载核心配置
+- automation: 重新加载自动化
+- script: 重新加载脚本
+- scene: 重新加载场景
+- template: 重新加载模板传感器
+- input_boolean: 重新加载输入布尔值
+- input_number: 重新加载输入数字
+- xiaomi_miot: 重新加载小米设备（会重新发现新设备）
+
+用于在添加新设备或修改配置后，无需重启 HA 即可生效。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"domain": {
+						Type:        "string",
+						Description: "要重新加载的集成域名，如 automation, template, xiaomi_miot",
+					},
+				},
+				Required: []string{"domain"},
+			},
+		},
+		{
+			Name: "reload_config_entry",
+			Description: `重新加载指定的配置条目。
+
+通过 entry_id 重新加载特定的集成配置，用于刷新单个设备或集成。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"entry_id": {
+						Type:        "string",
+						Description: "配置条目的 ID",
+					},
+				},
+				Required: []string{"entry_id"},
+			},
+		},
+		{
+			Name: "reload_all",
+			Description: `重新加载所有可重新加载的集成。
+
+一次性重新加载所有支持热重载的集成配置，包括自动化、脚本、场景等。`,
+			InputSchema: InputSchema{
+				Type: "object",
+			},
+		},
 	}
 }
 
@@ -598,6 +735,69 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			isError = true
 		} else {
 			result = fmt.Sprintf("✓ Deleted pending automation: %s", filePath)
+		}
+
+	case "create_template_sensor":
+		name, _ := args["name"].(string)
+		uniqueID, _ := args["unique_id"].(string)
+		stateTemplate, _ := args["state_template"].(string)
+		unit, _ := args["unit"].(string)
+		deviceClass, _ := args["device_class"].(string)
+
+		createResult, err := s.createTemplateSensor(name, uniqueID, stateTemplate, unit, deviceClass)
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = createResult
+		}
+
+	case "update_template_sensor":
+		entityID, _ := args["entity_id"].(string)
+		stateTemplate, _ := args["state_template"].(string)
+
+		updateResult, err := s.updateTemplateSensor(entityID, stateTemplate)
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = updateResult
+		}
+
+	case "render_template":
+		template, _ := args["template"].(string)
+		rendered, err := s.haClient.RenderTemplate(template)
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = rendered
+		}
+
+	case "reload_integration":
+		domain, _ := args["domain"].(string)
+		if err := s.haClient.ReloadIntegration(domain); err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = fmt.Sprintf("✓ Successfully reloaded integration: %s", domain)
+		}
+
+	case "reload_config_entry":
+		entryID, _ := args["entry_id"].(string)
+		if err := s.haClient.ReloadConfigEntry(entryID); err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = fmt.Sprintf("✓ Successfully reloaded config entry: %s", entryID)
+		}
+
+	case "reload_all":
+		if err := s.haClient.ReloadAll(); err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = "✓ Successfully reloaded all integrations"
 		}
 
 	default:
@@ -911,6 +1111,92 @@ func (s *Server) cancelPending(filePath string) error {
 	}
 
 	return nil
+}
+
+func (s *Server) createTemplateSensor(name, uniqueID, stateTemplate, unit, deviceClass string) (string, error) {
+	// First, render the template to get the initial value
+	value, err := s.haClient.RenderTemplate(stateTemplate)
+	if err != nil {
+		return "", fmt.Errorf("render template: %w", err)
+	}
+
+	// Create entity_id from unique_id
+	entityID := "sensor." + uniqueID
+
+	// Build attributes
+	attributes := map[string]any{
+		"friendly_name":  name,
+		"state_template": stateTemplate,
+	}
+	if unit != "" {
+		attributes["unit_of_measurement"] = unit
+	}
+	if deviceClass != "" {
+		attributes["device_class"] = deviceClass
+	}
+
+	// Set the state via HA API
+	if err := s.haClient.SetState(entityID, strings.TrimSpace(value), attributes); err != nil {
+		return "", fmt.Errorf("set state: %w", err)
+	}
+
+	// Save template config to file for persistence reference
+	configRepo := os.Getenv("HAC_CONFIG_REPO")
+	if configRepo != "" {
+		templateConfig := map[string]any{
+			"name":           name,
+			"unique_id":      uniqueID,
+			"entity_id":      entityID,
+			"state_template": stateTemplate,
+			"unit":           unit,
+			"device_class":   deviceClass,
+		}
+		s.saveTemplateSensorConfig(configRepo, uniqueID, templateConfig)
+	}
+
+	return fmt.Sprintf("✓ Created template sensor: %s\n  Entity ID: %s\n  Current value: %s %s\n\n⚠️ Note: This sensor is created via API and will be lost after HA restart.\nTo make it persistent, add the following to your configuration.yaml:\n\n```yaml\ntemplate:\n  - sensor:\n      - name: \"%s\"\n        unique_id: %s\n        unit_of_measurement: \"%s\"\n        device_class: %s\n        state: >-\n          %s\n```", name, entityID, strings.TrimSpace(value), unit, name, uniqueID, unit, deviceClass, stateTemplate), nil
+}
+
+func (s *Server) updateTemplateSensor(entityID, stateTemplate string) (string, error) {
+	// Get current state to preserve attributes
+	currentState, err := s.haClient.GetState(entityID)
+	if err != nil {
+		return "", fmt.Errorf("get current state: %w", err)
+	}
+
+	// Render the new value
+	value, err := s.haClient.RenderTemplate(stateTemplate)
+	if err != nil {
+		return "", fmt.Errorf("render template: %w", err)
+	}
+
+	// Update state_template in attributes
+	attributes := currentState.Attributes
+	if attributes == nil {
+		attributes = make(map[string]any)
+	}
+	attributes["state_template"] = stateTemplate
+
+	// Set the new state
+	if err := s.haClient.SetState(entityID, strings.TrimSpace(value), attributes); err != nil {
+		return "", fmt.Errorf("set state: %w", err)
+	}
+
+	return fmt.Sprintf("✓ Updated %s\n  New value: %s", entityID, strings.TrimSpace(value)), nil
+}
+
+func (s *Server) saveTemplateSensorConfig(repoPath, uniqueID string, config map[string]any) error {
+	sensorsDir := filepath.Join(repoPath, "sensors")
+	if err := os.MkdirAll(sensorsDir, 0755); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(sensorsDir, uniqueID+".yaml")
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, data, 0644)
 }
 
 func gitAdd(repoPath, filePath string) error {
