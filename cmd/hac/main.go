@@ -411,12 +411,13 @@ func cmdDeploy(client *ha.Client, path string) error {
 	}
 
 	// Ensure required categories exist
-	requiredGroups := []string{"人来灯亮", "人走灯灭", "热水器", "马桶换气"}
+	requiredGroups := []string{"人来灯亮", "人走灯灭", "热水器", "马桶换气", "睡眠模式"}
 	groupIcons := map[string]string{
 		"人来灯亮": "mdi:lightbulb-on",
 		"人走灯灭": "mdi:lightbulb-off",
 		"热水器":  "mdi:water-boiler",
 		"马桶换气": "mdi:toilet",
+		"睡眠模式": "mdi:sleep",
 	}
 	for _, group := range requiredGroups {
 		if _, exists := categoryMap[group]; !exists {
@@ -601,6 +602,7 @@ func getAutomationGroup(alias string) string {
 		"人走灯灭": {"_无人_关灯", "_无人5分钟_关灯"},
 		"热水器":  {"热水器"},
 		"马桶换气": {"_坐马桶_开换气", "_无人_关换气"},
+		"睡眠模式": {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式"},
 	}
 
 	for group, suffixes := range patterns {
