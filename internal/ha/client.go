@@ -576,11 +576,13 @@ func (ws *WSClient) CreateInputNumber(name string, min, max, step, initial float
 	return "", fmt.Errorf("failed to get created entity_id")
 }
 
-// CreateTemplateSensor creates a persistent template sensor via WebSocket API
+// CreateTemplateSensor creates a persistent template sensor via WebSocket API (UI Helper)
 func (ws *WSClient) CreateTemplateSensor(name, stateTemplate, unit, deviceClass, icon string) (string, error) {
+	// Use template/item/create for UI-based template helpers
 	data := map[string]any{
-		"name":           name,
-		"state_template": stateTemplate,
+		"template_type": "sensor",
+		"name":          name,
+		"state":         stateTemplate,
 	}
 	if unit != "" {
 		data["unit_of_measurement"] = unit
@@ -588,11 +590,8 @@ func (ws *WSClient) CreateTemplateSensor(name, stateTemplate, unit, deviceClass,
 	if deviceClass != "" {
 		data["device_class"] = deviceClass
 	}
-	if icon != "" {
-		data["icon"] = icon
-	}
 
-	result, err := ws.sendCommand("template/create", data)
+	result, err := ws.sendCommand("template/item/create", data)
 	if err != nil {
 		return "", err
 	}
@@ -600,7 +599,7 @@ func (ws *WSClient) CreateTemplateSensor(name, stateTemplate, unit, deviceClass,
 	// Extract the created entity_id
 	if resultData, ok := result["result"].(map[string]any); ok {
 		if id, ok := resultData["id"].(string); ok {
-			return "sensor." + id, nil
+			return "sensor.template_" + id, nil
 		}
 	}
 
