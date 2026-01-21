@@ -390,10 +390,7 @@ labels: 可选，用于分组自动化，如 ["人来灯亮"]、["热水器"]`,
 通过自动化 ID 更新其配置。可以从 list_automations 获取自动化的 ID。
 配置格式与 create_automation 相同。
 
-⚠️ 工作流：
-1. 调用此工具更新 HA 中的自动化
-2. 提示用户确认更新是否正确
-3. 用户确认后，调用 sync_automation 同步配置到本地并 commit`,
+更新成功后会自动同步配置到本地并提交 git。`,
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -407,27 +404,6 @@ labels: 可选，用于分组自动化，如 ["人来灯亮"]、["热水器"]`,
 					},
 				},
 				Required: []string{"automation_id", "config"},
-			},
-		},
-		{
-			Name: "sync_automation",
-			Description: `从 Home Assistant 同步自动化配置到本地文件并提交 git。
-
-⚠️ 使用场景：
-1. 通过 API（update_automation）修改自动化后，用户确认无误
-2. 调用此工具将 HA 中的配置同步到本地 automations 目录
-3. 自动提交 git commit
-
-这确保本地配置文件与 HA 中的实际配置保持一致。`,
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]Property{
-					"automation_id": {
-						Type:        "string",
-						Description: "自动化的 ID",
-					},
-				},
-				Required: []string{"automation_id"},
 			},
 		},
 		{
@@ -926,18 +902,15 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				isError = true
 			} else {
 				alias, _ := config["alias"].(string)
-				result = fmt.Sprintf("✓ 成功更新自动化: %s (ID: %s)\n\n⚠️ 请确认 HA 中的自动化是否正常工作。确认后请调用 sync_automation 同步配置到本地。", alias, automationID)
+				// Auto sync to local
+				configRepo := os.Getenv("HAC_CONFIG_REPO")
+				syncResult, syncErr := s.syncAutomationConfig(configRepo, automationID)
+				if syncErr != nil {
+					result = fmt.Sprintf("✓ 成功更新自动化: %s (ID: %s)\n⚠️ 同步本地失败: %v", alias, automationID, syncErr)
+				} else {
+					result = fmt.Sprintf("✓ 成功更新自动化: %s (ID: %s)\n%s", alias, automationID, syncResult)
+				}
 			}
-		}
-
-	case "sync_automation":
-		automationID, _ := args["automation_id"].(string)
-		syncResult, err := s.syncAutomation(automationID)
-		if err != nil {
-			result = fmt.Sprintf("Error: %v", err)
-			isError = true
-		} else {
-			result = syncResult
 		}
 
 	case "list_pending":
@@ -1154,7 +1127,14 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				result = fmt.Sprintf("Error: %v", err)
 				isError = true
 			} else {
-				result = fmt.Sprintf("✓ 成功创建 input_number: %s\n初始值: %.0f %s\n范围: %.0f - %.0f", entityID, initial, unit, min, max)
+				// Auto sync to local
+				configRepo := os.Getenv("HAC_CONFIG_REPO")
+				syncResult, syncErr := s.syncInputNumberConfig(configRepo)
+				if syncErr != nil {
+					result = fmt.Sprintf("✓ 成功创建 input_number: %s\n初始值: %.0f %s\n范围: %.0f - %.0f\n⚠️ 同步本地失败: %v", entityID, initial, unit, min, max, syncErr)
+				} else {
+					result = fmt.Sprintf("✓ 成功创建 input_number: %s\n初始值: %.0f %s\n范围: %.0f - %.0f\n%s", entityID, initial, unit, min, max, syncResult)
+				}
 			}
 		}
 
@@ -1357,13 +1337,7 @@ func (s *Server) savePendingAutomation(repoPath, name string, automation map[str
 	return filePath, nil
 }
 
-// syncAutomation syncs an automation config from HA to local file and commits
-func (s *Server) syncAutomation(automationID string) (string, error) {
-	configRepo := os.Getenv("HAC_CONFIG_REPO")
-	if configRepo == "" {
-		return "", fmt.Errorf("HAC_CONFIG_REPO not configured")
-	}
-
+func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, error) {
 	// Get automation config from HA
 	config, err := s.haClient.GetAutomationConfig(automationID)
 	if err != nil {
@@ -1408,6 +1382,78 @@ func (s *Server) syncAutomation(automationID string) (string, error) {
 	}
 
 	return fmt.Sprintf("✓ 已同步自动化配置到本地: %s\n✓ 已提交 git commit", filePath), nil
+}
+
+func (s *Server) syncInputNumberConfig(configRepo string) (string, error) {
+	// Get all input_number states from HA
+	states, err := s.haClient.GetStates()
+	if err != nil {
+		return "", fmt.Errorf("get states: %w", err)
+	}
+
+	// Filter input_number entities
+	var inputNumbers []map[string]any
+	for _, state := range states {
+		if strings.HasPrefix(state.EntityID, "input_number.") {
+			// Only sync editable (user-created) input_numbers
+			if editable, ok := state.Attributes["editable"].(bool); ok && editable {
+				entry := map[string]any{
+					"name":    state.Attributes["friendly_name"],
+					"min":     state.Attributes["min"],
+					"max":     state.Attributes["max"],
+					"step":    state.Attributes["step"],
+					"initial": state.Attributes["initial"],
+				}
+				if unit, ok := state.Attributes["unit_of_measurement"].(string); ok && unit != "" {
+					entry["unit_of_measurement"] = unit
+				}
+				if icon, ok := state.Attributes["icon"].(string); ok && icon != "" {
+					entry["icon"] = icon
+				}
+				// Use entity_id suffix as key
+				key := strings.TrimPrefix(state.EntityID, "input_number.")
+				inputNumbers = append(inputNumbers, map[string]any{key: entry})
+			}
+		}
+	}
+
+	if len(inputNumbers) == 0 {
+		return "没有找到用户创建的 input_number", nil
+	}
+
+	// Build config map
+	configMap := make(map[string]any)
+	for _, item := range inputNumbers {
+		for k, v := range item {
+			configMap[k] = v
+		}
+	}
+
+	// Write to input_number.yaml
+	filePath := filepath.Join(configRepo, "input_number.yaml")
+	data, err := yaml.Marshal(configMap)
+	if err != nil {
+		return "", fmt.Errorf("marshal yaml: %w", err)
+	}
+
+	// Add header comment
+	header := "# 全局变量配置 - 由 hac sync_config 自动生成\n\n"
+	if err := os.WriteFile(filePath, []byte(header+string(data)), 0644); err != nil {
+		return "", fmt.Errorf("write file: %w", err)
+	}
+
+	// Git add and commit
+	if err := gitAdd(configRepo, filePath); err != nil {
+		return "", fmt.Errorf("git add: %w", err)
+	}
+	commitMsg := fmt.Sprintf("Sync input_number config (%d items)", len(inputNumbers))
+	if err := gitCommit(configRepo, commitMsg); err != nil {
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			return "", fmt.Errorf("git commit: %w", err)
+		}
+	}
+
+	return fmt.Sprintf("✓ 已同步 %d 个 input_number 到本地: %s\n✓ 已提交 git commit", len(inputNumbers), filePath), nil
 }
 
 func (s *Server) confirmAutomation(filePath string) (string, error) {
