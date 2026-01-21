@@ -376,6 +376,27 @@ labels: 可选，用于分组自动化，如 ["人来灯亮"]、["热水器"]`,
 			},
 		},
 		{
+			Name: "update_automation",
+			Description: `更新一个已存在的 Home Assistant 自动化规则。
+
+通过自动化 ID 更新其配置。可以从 list_automations 获取自动化的 ID。
+配置格式与 create_automation 相同。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"automation_id": {
+						Type:        "string",
+						Description: "自动化的 ID（从 list_automations 获取）",
+					},
+					"config": {
+						Type:        "string",
+						Description: "自动化配置的 YAML 字符串",
+					},
+				},
+				Required: []string{"automation_id", "config"},
+			},
+		},
+		{
 			Name:        "list_pending",
 			Description: "列出所有待确认的自动化草稿（pending 目录中的配置）。",
 			InputSchema: InputSchema{
@@ -768,6 +789,24 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			isError = true
 		} else {
 			result = fmt.Sprintf("Successfully deleted automation: %s", automationID)
+		}
+
+	case "update_automation":
+		automationID, _ := args["automation_id"].(string)
+		configYAML, _ := args["config"].(string)
+		var config map[string]any
+		if err := yaml.Unmarshal([]byte(configYAML), &config); err != nil {
+			result = fmt.Sprintf("Error parsing YAML: %v", err)
+			isError = true
+		} else {
+			config["id"] = automationID
+			if err := s.haClient.UpdateAutomation(automationID, config); err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				alias, _ := config["alias"].(string)
+				result = fmt.Sprintf("✓ 成功更新自动化: %s (ID: %s)", alias, automationID)
+			}
 		}
 
 	case "list_pending":
