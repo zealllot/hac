@@ -160,9 +160,30 @@ func (s *Server) getTools() []Tool {
 	return []Tool{
 		{
 			Name:        "get_devices",
-			Description: "获取 Home Assistant 中所有设备及其能力。返回每个设备的 entity_id、名称、当前状态、支持的服务和属性。",
+			Description: "获取 Home Assistant 中所有设备及其能力。返回每个设备的 entity_id、名称、当前状态、支持的服务和属性。注意：设备数量较多时可能被截断，建议使用 search_devices 按关键词搜索。",
 			InputSchema: InputSchema{
 				Type: "object",
+			},
+		},
+		{
+			Name: "search_devices",
+			Description: `按关键词搜索设备。支持搜索 entity_id 和设备名称。
+
+示例：
+- 搜索 "衣帽间" 会返回所有名称包含"衣帽间"的设备
+- 搜索 "light" 会返回所有灯类设备
+- 搜索 "客厅 灯" 会返回客厅的灯
+
+推荐在创建自动化前使用此工具确认设备的 entity_id。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"keyword": {
+						Type:        "string",
+						Description: "搜索关键词，支持中文，多个关键词用空格分隔（AND 关系）",
+					},
+				},
+				Required: []string{"keyword"},
 			},
 		},
 		{
@@ -385,27 +406,38 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			result = fmt.Sprintf("Error: %v", err)
 			isError = true
 		} else {
-			// 按域分组，只返回 entity_id 和 name，减少数据量
-			grouped := make(map[string][]string)
-			for _, d := range devices {
-				domain := strings.Split(d.EntityID, ".")[0]
-				display := d.EntityID
-				if d.Name != "" {
-					display = fmt.Sprintf("%s (%s)", d.EntityID, d.Name)
-				}
-				grouped[domain] = append(grouped[domain], display)
-			}
+			data, _ := json.MarshalIndent(devices, "", "  ")
+			result = string(data)
+		}
 
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("共 %d 个实体:\n\n", len(devices)))
-			for domain, entities := range grouped {
-				sb.WriteString(fmt.Sprintf("## %s (%d)\n", domain, len(entities)))
-				for _, e := range entities {
-					sb.WriteString(fmt.Sprintf("- %s\n", e))
+	case "search_devices":
+		keyword, _ := args["keyword"].(string)
+		devices, err := s.haClient.GetDevices()
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			keywords := strings.Fields(strings.ToLower(keyword))
+			var matched []ha.DeviceCapability
+			for _, d := range devices {
+				searchText := strings.ToLower(d.EntityID + " " + d.Name)
+				allMatch := true
+				for _, kw := range keywords {
+					if !strings.Contains(searchText, kw) {
+						allMatch = false
+						break
+					}
 				}
-				sb.WriteString("\n")
+				if allMatch {
+					matched = append(matched, d)
+				}
 			}
-			result = sb.String()
+			if len(matched) == 0 {
+				result = fmt.Sprintf("未找到匹配 \"%s\" 的设备", keyword)
+			} else {
+				data, _ := json.MarshalIndent(matched, "", "  ")
+				result = fmt.Sprintf("找到 %d 个匹配的设备:\n%s", len(matched), string(data))
+			}
 		}
 
 	case "get_state":
