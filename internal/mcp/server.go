@@ -603,6 +603,27 @@ Template Sensor 可以通过 Jinja2 模板动态计算值，常用于：
 				Required: []string{"entity_ids", "category_id"},
 			},
 		},
+		{
+			Name: "rename_entity",
+			Description: `重命名实体的 entity_id。
+
+用于将自动生成的长 entity_id 改为更易读的名称。
+例如将 light.mijia_cn_group_1992129452574117888_group3_s_2_light 改为 light.kewei_dengzu`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"old_entity_id": {
+						Type:        "string",
+						Description: "当前的 entity_id",
+					},
+					"new_entity_id": {
+						Type:        "string",
+						Description: "新的 entity_id，需要保持相同的域名前缀（如 light.）",
+					},
+				},
+				Required: []string{"old_entity_id", "new_entity_id"},
+			},
+		},
 	}
 }
 
@@ -963,6 +984,23 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				}
 			} else {
 				result = fmt.Sprintf("✓ 成功将 %d 个自动化分配到分组", successCount)
+			}
+		}
+
+	case "rename_entity":
+		oldEntityID, _ := args["old_entity_id"].(string)
+		newEntityID, _ := args["new_entity_id"].(string)
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			if err := ws.RenameEntityID(oldEntityID, newEntityID); err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				result = fmt.Sprintf("✓ 成功重命名: %s -> %s", oldEntityID, newEntityID)
 			}
 		}
 

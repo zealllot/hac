@@ -511,3 +511,12 @@ func (ws *WSClient) AssignCategory(scope, entityID, categoryID string) error {
 	})
 	return err
 }
+
+// RenameEntityID renames an entity's entity_id
+func (ws *WSClient) RenameEntityID(oldEntityID, newEntityID string) error {
+	_, err := ws.sendCommand("config/entity_registry/update", map[string]any{
+		"entity_id":     oldEntityID,
+		"new_entity_id": newEntityID,
+	})
+	return err
+}
