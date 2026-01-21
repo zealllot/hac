@@ -520,3 +520,12 @@ func (ws *WSClient) RenameEntityID(oldEntityID, newEntityID string) error {
 	})
 	return err
 }
+
+// SetEntityName sets an entity's friendly name (display name)
+func (ws *WSClient) SetEntityName(entityID, name string) error {
+	_, err := ws.sendCommand("config/entity_registry/update", map[string]any{
+		"entity_id": entityID,
+		"name":      name,
+	})
+	return err
+}

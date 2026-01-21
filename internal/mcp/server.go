@@ -624,6 +624,27 @@ Template Sensor 可以通过 Jinja2 模板动态计算值，常用于：
 				Required: []string{"old_entity_id", "new_entity_id"},
 			},
 		},
+		{
+			Name: "set_entity_name",
+			Description: `设置实体的显示名称（friendly_name）。
+
+用于将实体在 HA UI 中显示的名称改为更易读的中文名称。
+entity_id 不变，只改变显示名称。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"entity_id": {
+						Type:        "string",
+						Description: "实体的 entity_id",
+					},
+					"name": {
+						Type:        "string",
+						Description: "新的显示名称，支持中文",
+					},
+				},
+				Required: []string{"entity_id", "name"},
+			},
+		},
 	}
 }
 
@@ -1001,6 +1022,23 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				isError = true
 			} else {
 				result = fmt.Sprintf("✓ 成功重命名: %s -> %s", oldEntityID, newEntityID)
+			}
+		}
+
+	case "set_entity_name":
+		entityID, _ := args["entity_id"].(string)
+		name, _ := args["name"].(string)
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			if err := ws.SetEntityName(entityID, name); err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				result = fmt.Sprintf("✓ 成功设置显示名称: %s -> %s", entityID, name)
 			}
 		}
 
