@@ -325,12 +325,14 @@ IR 格式示例：
   "trigger": {"type": "state", "entity": "binary_sensor.motion_living_room", "to": "on"},
   "conditions": [{"type": "time", "after": "19:00", "before": "23:00"}],
   "actions": [{"action": "call_service", "service": "light.turn_on", "target": "light.living_room", "data": {"brightness_pct": 80}}],
-  "constraints": {"mode": "restart"}
+  "constraints": {"mode": "restart"},
+  "labels": ["人来灯亮"]
 }
 
 支持的 trigger.type: state, time
-支持的 condition.type: state, time
-推荐 mode: restart（人体感应）、single（定时任务）、queued（按钮触发）`,
+支持的 condition.type: state, time, numeric_state
+推荐 mode: restart（人体感应）、single（定时任务）、queued（按钮触发）
+labels: 可选，用于分组自动化，如 ["人来灯亮"]、["热水器"]`,
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{

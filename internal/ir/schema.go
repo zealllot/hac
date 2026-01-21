@@ -13,6 +13,7 @@ type AutomationIR struct {
 	Conditions  []Condition  `json:"conditions,omitempty"`
 	Actions     []ActionIR   `json:"actions"`
 	Constraints *Constraints `json:"constraints,omitempty"`
+	Labels      []string     `json:"labels,omitempty"`
 }
 
 type Trigger struct {

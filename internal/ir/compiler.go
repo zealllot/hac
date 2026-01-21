@@ -13,6 +13,7 @@ type HAAutomation struct {
 	Trigger     []map[string]any `json:"trigger"`
 	Condition   []map[string]any `json:"condition,omitempty"`
 	Action      []map[string]any `json:"action"`
+	Labels      []string         `json:"labels,omitempty"`
 }
 
 func CompileAutomation(ir *AutomationIR) (*HAAutomation, error) {
@@ -46,6 +47,10 @@ func CompileAutomation(ir *AutomationIR) (*HAAutomation, error) {
 			return nil, fmt.Errorf("compile action: %w", err)
 		}
 		ha.Action = append(ha.Action, haAction)
+	}
+
+	if len(ir.Labels) > 0 {
+		ha.Labels = ir.Labels
 	}
 
 	return ha, nil
