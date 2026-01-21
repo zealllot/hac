@@ -443,7 +443,7 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			} else {
 				// 按域分组展示，更清晰
 				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("找到 %d 个匹配的设备:\n\n", len(matched)))
+				sb.WriteString(fmt.Sprintf("找到 %d 个匹配的设备（必须全部展示给用户，不要省略）:\n\n", len(matched)))
 				grouped := make(map[string][]ha.DeviceCapability)
 				for _, d := range matched {
 					grouped[d.Domain] = append(grouped[d.Domain], d)
