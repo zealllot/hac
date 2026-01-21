@@ -1321,6 +1321,13 @@ func (s *Server) createAutomation(irStr string) (string, error) {
 		automationMap["description"] = haAutomation.Description
 	}
 
+	// Validate all entity_ids exist in HA
+	missingEntities := s.validateEntityIDs(automationMap)
+	var warningMsg string
+	if len(missingEntities) > 0 {
+		warningMsg = fmt.Sprintf("\n\n⚠️ 警告：以下 entity_id 在 HA 中不存在：\n- %s\n请确认这些实体是否正确。", strings.Join(missingEntities, "\n- "))
+	}
+
 	// Save to pending directory for user review (don't deploy yet)
 	configRepo := os.Getenv("HAC_CONFIG_REPO")
 	if configRepo == "" {
@@ -1333,7 +1340,65 @@ func (s *Server) createAutomation(irStr string) (string, error) {
 	}
 
 	yamlData, _ := yaml.Marshal(automationMap)
-	return fmt.Sprintf("📝 Automation draft saved to:\n%s\n\n```yaml\n%s```\n\n⚠️ Please review the configuration above.\nSay \"确认\" or \"confirm\" to deploy to Home Assistant.", filePath, string(yamlData)), nil
+	return fmt.Sprintf("📝 Automation draft saved to:\n%s\n\n```yaml\n%s```%s\n\n⚠️ Please review the configuration above.\nSay \"确认\" or \"confirm\" to deploy to Home Assistant.", filePath, string(yamlData), warningMsg), nil
+}
+
+// validateEntityIDs extracts all entity_ids from automation config and checks if they exist in HA
+func (s *Server) validateEntityIDs(config map[string]any) []string {
+	// Get all states from HA
+	states, err := s.haClient.GetStates()
+	if err != nil {
+		return nil // Can't validate, skip
+	}
+
+	// Build a set of existing entity_ids
+	existingIDs := make(map[string]bool)
+	for _, state := range states {
+		existingIDs[state.EntityID] = true
+	}
+
+	// Extract all entity_ids from config
+	entityIDs := extractEntityIDs(config)
+
+	// Find missing ones
+	var missing []string
+	for _, id := range entityIDs {
+		if !existingIDs[id] {
+			missing = append(missing, id)
+		}
+	}
+
+	return missing
+}
+
+// extractEntityIDs recursively extracts all entity_id values from a config map
+func extractEntityIDs(v any) []string {
+	var ids []string
+
+	switch val := v.(type) {
+	case map[string]any:
+		for k, v := range val {
+			if k == "entity_id" {
+				if id, ok := v.(string); ok {
+					ids = append(ids, id)
+				} else if idList, ok := v.([]any); ok {
+					for _, item := range idList {
+						if id, ok := item.(string); ok {
+							ids = append(ids, id)
+						}
+					}
+				}
+			} else {
+				ids = append(ids, extractEntityIDs(v)...)
+			}
+		}
+	case []any:
+		for _, item := range val {
+			ids = append(ids, extractEntityIDs(item)...)
+		}
+	}
+
+	return ids
 }
 
 func (s *Server) savePendingAutomation(repoPath, name string, automation map[string]any) (string, error) {
@@ -1706,33 +1771,22 @@ func (s *Server) cancelPending(filePath string) error {
 }
 
 func (s *Server) createTemplateSensor(name, uniqueID, stateTemplate, unit, deviceClass string) (string, error) {
-	// First, render the template to get the initial value
-	value, err := s.haClient.RenderTemplate(stateTemplate)
+	// Use WebSocket API to create persistent template sensor
+	ws, err := s.haClient.NewWSClient()
 	if err != nil {
-		return "", fmt.Errorf("render template: %w", err)
+		return "", fmt.Errorf("connect to HA: %w", err)
+	}
+	defer ws.Close()
+
+	entityID, err := ws.CreateTemplateSensor(name, stateTemplate, unit, deviceClass, "")
+	if err != nil {
+		return "", fmt.Errorf("create template sensor: %w", err)
 	}
 
-	// Create entity_id from unique_id
-	entityID := "sensor." + uniqueID
+	// Render the template to show current value
+	value, _ := s.haClient.RenderTemplate(stateTemplate)
 
-	// Build attributes
-	attributes := map[string]any{
-		"friendly_name":  name,
-		"state_template": stateTemplate,
-	}
-	if unit != "" {
-		attributes["unit_of_measurement"] = unit
-	}
-	if deviceClass != "" {
-		attributes["device_class"] = deviceClass
-	}
-
-	// Set the state via HA API
-	if err := s.haClient.SetState(entityID, strings.TrimSpace(value), attributes); err != nil {
-		return "", fmt.Errorf("set state: %w", err)
-	}
-
-	// Save template config to file for persistence reference
+	// Save template config to file for reference
 	configRepo := os.Getenv("HAC_CONFIG_REPO")
 	if configRepo != "" {
 		templateConfig := map[string]any{
@@ -1746,7 +1800,7 @@ func (s *Server) createTemplateSensor(name, uniqueID, stateTemplate, unit, devic
 		s.saveTemplateSensorConfig(configRepo, uniqueID, templateConfig)
 	}
 
-	return fmt.Sprintf("✓ Created template sensor: %s\n  Entity ID: %s\n  Current value: %s %s\n\n⚠️ Note: This sensor is created via API and will be lost after HA restart.\nTo make it persistent, add the following to your configuration.yaml:\n\n```yaml\ntemplate:\n  - sensor:\n      - name: \"%s\"\n        unique_id: %s\n        unit_of_measurement: \"%s\"\n        device_class: %s\n        state: >-\n          %s\n```", name, entityID, strings.TrimSpace(value), unit, name, uniqueID, unit, deviceClass, stateTemplate), nil
+	return fmt.Sprintf("✓ 成功创建持久化模板传感器: %s\n  Entity ID: %s\n  当前值: %s %s", name, entityID, strings.TrimSpace(value), unit), nil
 }
 
 func (s *Server) updateTemplateSensor(entityID, stateTemplate string) (string, error) {
