@@ -247,24 +247,35 @@ func (c *Client) GetDevices() (map[string]DeviceCapability, error) {
 }
 
 func (c *Client) getEntityAreas(states []EntityState) map[string]string {
-	// 构建批量查询模板
-	var sb strings.Builder
-	sb.WriteString("{% set results = [] %}")
-	for _, s := range states {
-		sb.WriteString(fmt.Sprintf("{%% set results = results + [('%s', area_name(area_id('%s')) | default(''))] %%}", s.EntityID, s.EntityID))
-	}
-	sb.WriteString("{% for e, a in results %}{{ e }}|{{ a }}\n{% endfor %}")
-
-	result, err := c.RenderTemplate(sb.String())
-	if err != nil {
-		return make(map[string]string)
-	}
-
 	areas := make(map[string]string)
-	for _, line := range strings.Split(result, "\n") {
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) == 2 && parts[1] != "" {
-			areas[parts[0]] = parts[1]
+
+	// 分批处理，每批 50 个实体
+	batchSize := 50
+	for i := 0; i < len(states); i += batchSize {
+		end := i + batchSize
+		if end > len(states) {
+			end = len(states)
+		}
+		batch := states[i:end]
+
+		var sb strings.Builder
+		for j, s := range batch {
+			if j > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(fmt.Sprintf("{{ '%s' }}|{{ area_name(area_id('%s')) | default('') }}", s.EntityID, s.EntityID))
+		}
+
+		result, err := c.RenderTemplate(sb.String())
+		if err != nil {
+			continue
+		}
+
+		for _, line := range strings.Split(result, "\n") {
+			parts := strings.SplitN(line, "|", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
+				areas[parts[0]] = strings.TrimSpace(parts[1])
+			}
 		}
 	}
 	return areas

@@ -422,8 +422,11 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			keywords := strings.Fields(strings.ToLower(keyword))
 			var matched []ha.DeviceCapability
 			for _, d := range devices {
-				// 搜索 entity_id、名称和区域
-				searchText := strings.ToLower(d.EntityID + " " + d.Name + " " + d.Area)
+				// 搜索 entity_id、名称和区域（只在有值时搜索）
+				searchText := strings.ToLower(d.EntityID + " " + d.Name)
+				if d.Area != "" {
+					searchText += " " + strings.ToLower(d.Area)
+				}
 				allMatch := true
 				for _, kw := range keywords {
 					if !strings.Contains(searchText, kw) {
@@ -438,8 +441,25 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			if len(matched) == 0 {
 				result = fmt.Sprintf("未找到匹配 \"%s\" 的设备", keyword)
 			} else {
-				data, _ := json.MarshalIndent(matched, "", "  ")
-				result = fmt.Sprintf("找到 %d 个匹配的设备:\n%s", len(matched), string(data))
+				// 按域分组展示，更清晰
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("找到 %d 个匹配的设备:\n\n", len(matched)))
+				grouped := make(map[string][]ha.DeviceCapability)
+				for _, d := range matched {
+					grouped[d.Domain] = append(grouped[d.Domain], d)
+				}
+				for domain, devs := range grouped {
+					sb.WriteString(fmt.Sprintf("## %s (%d个)\n", domain, len(devs)))
+					for _, d := range devs {
+						area := ""
+						if d.Area != "" {
+							area = fmt.Sprintf(" [%s]", d.Area)
+						}
+						sb.WriteString(fmt.Sprintf("- %s (%s)%s - %s\n", d.EntityID, d.Name, area, d.State))
+					}
+					sb.WriteString("\n")
+				}
+				result = sb.String()
 			}
 		}
 
