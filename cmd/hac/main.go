@@ -411,11 +411,12 @@ func cmdDeploy(client *ha.Client, path string) error {
 	}
 
 	// Ensure required categories exist
-	requiredGroups := []string{"人来灯亮", "人走灯灭", "热水器"}
+	requiredGroups := []string{"人来灯亮", "人走灯灭", "热水器", "马桶换气"}
 	groupIcons := map[string]string{
 		"人来灯亮": "mdi:lightbulb-on",
 		"人走灯灭": "mdi:lightbulb-off",
 		"热水器":  "mdi:water-boiler",
+		"马桶换气": "mdi:toilet",
 	}
 	for _, group := range requiredGroups {
 		if _, exists := categoryMap[group]; !exists {
