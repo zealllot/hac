@@ -392,6 +392,44 @@ func cmdDeploy(client *ha.Client, path string) error {
 		files = []string{path}
 	}
 
+	// Connect WebSocket for category operations
+	ws, err := client.NewWSClient()
+	if err != nil {
+		return fmt.Errorf("connect WebSocket: %w", err)
+	}
+	defer ws.Close()
+
+	// Get or create categories
+	categories, err := ws.ListCategories("automation")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to list categories: %v\n", err)
+	}
+
+	categoryMap := make(map[string]string) // group name -> category ID
+	for _, cat := range categories {
+		categoryMap[cat.Name] = cat.CategoryID
+	}
+
+	// Ensure required categories exist
+	requiredGroups := []string{"人来灯亮", "人走灯灭", "热水器"}
+	groupIcons := map[string]string{
+		"人来灯亮": "mdi:lightbulb-on",
+		"人走灯灭": "mdi:lightbulb-off",
+		"热水器":  "mdi:water-boiler",
+	}
+	for _, group := range requiredGroups {
+		if _, exists := categoryMap[group]; !exists {
+			icon := groupIcons[group]
+			cat, err := ws.CreateCategory("automation", group, icon)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to create category %s: %v\n", group, err)
+			} else {
+				categoryMap[group] = cat.CategoryID
+				fmt.Printf("✓ Created category: %s\n", group)
+			}
+		}
+	}
+
 	deployed := 0
 	for _, file := range files {
 		data, err := os.ReadFile(file)
@@ -411,11 +449,33 @@ func cmdDeploy(client *ha.Client, path string) error {
 			continue
 		}
 
-		name := filepath.Base(file)
-		if alias, ok := automation["alias"].(string); ok {
-			name = alias
+		alias := filepath.Base(file)
+		if a, ok := automation["alias"].(string); ok {
+			alias = a
 		}
-		fmt.Printf("✓ Deployed %s\n", name)
+
+		// Assign category based on alias
+		group := getAutomationGroup(alias)
+		if categoryID, exists := categoryMap[group]; exists {
+			// Get entity_id from automation id
+			id, _ := automation["id"].(string)
+			if id != "" {
+				entityID := "automation." + strings.ReplaceAll(strings.ToLower(alias), " ", "_")
+				// Try to find the actual entity_id
+				automations, _ := client.GetAutomations()
+				for _, a := range automations {
+					if aid, ok := a.Attributes["id"].(string); ok && aid == id {
+						entityID = a.EntityID
+						break
+					}
+				}
+				if err := ws.AssignCategory("automation", entityID, categoryID); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to assign category for %s: %v\n", alias, err)
+				}
+			}
+		}
+
+		fmt.Printf("✓ Deployed %s\n", alias)
 		deployed++
 	}
 
@@ -449,52 +509,66 @@ func cmdSync() {
 		os.Exit(1)
 	}
 
+	// Track synced files by group for README generation
+	groupFiles := make(map[string][]string)
 	synced := 0
+
 	for _, a := range automations {
-		state, err := client.GetState(a.EntityID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to get %s: %v\n", a.EntityID, err)
+		// Get automation config from HA API
+		id, _ := a.Attributes["id"].(string)
+		if id == "" {
 			continue
 		}
 
-		id := strings.TrimPrefix(a.EntityID, "automation.")
-
-		automation := map[string]any{
-			"id": id,
-		}
-
-		if alias, ok := state.Attributes["friendly_name"].(string); ok {
-			automation["alias"] = alias
-		}
-		if mode, ok := state.Attributes["mode"].(string); ok {
-			automation["mode"] = mode
-		}
-
-		for k, v := range state.Attributes {
-			switch k {
-			case "friendly_name", "mode", "id", "last_triggered":
-				continue
-			default:
-				automation[k] = v
-			}
-		}
-
-		data, err := yaml.Marshal(automation)
+		config, err := client.GetAutomationConfig(id)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to marshal %s: %v\n", id, err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to get config for %s: %v\n", a.EntityID, err)
 			continue
 		}
 
-		filename := filepath.Join(automationsDir, id+".yaml")
+		alias, _ := config["alias"].(string)
+		if alias == "" {
+			alias = strings.TrimPrefix(a.EntityID, "automation.")
+		}
+
+		// Determine group based on alias
+		group := getAutomationGroup(alias)
+
+		// Create group directory
+		groupDir := filepath.Join(automationsDir, group)
+		if err := os.MkdirAll(groupDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create group dir %s: %v\n", group, err)
+			continue
+		}
+
+		data, err := yaml.Marshal(config)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to marshal %s: %v\n", alias, err)
+			continue
+		}
+
+		filename := filepath.Join(groupDir, alias+".yaml")
 		if err := os.WriteFile(filename, data, 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to write %s: %v\n", filename, err)
 			continue
 		}
 
+		groupFiles[group] = append(groupFiles[group], alias)
 		synced++
 	}
 
-	fmt.Printf("✓ Synced %d automations to %s\n", synced, automationsDir)
+	// Generate README for each group
+	for group := range groupFiles {
+		groupDir := filepath.Join(automationsDir, group)
+		if err := generateGroupREADME(groupDir, group); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to generate README for %s: %v\n", group, err)
+		}
+	}
+
+	fmt.Printf("✓ Synced %d automations to %d groups\n", synced, len(groupFiles))
+	for group, files := range groupFiles {
+		fmt.Printf("  - %s: %d 个\n", group, len(files))
+	}
 
 	// Git add and commit
 	cmd := exec.Command("git", "add", "automations/")
@@ -517,6 +591,189 @@ func cmdSync() {
 	}
 
 	fmt.Println("✓ Committed changes to git")
+}
+
+// getAutomationGroup determines the group/category for an automation based on its alias
+func getAutomationGroup(alias string) string {
+	patterns := map[string][]string{
+		"人来灯亮": {"_有人_开灯", "_有人移动_开灯"},
+		"人走灯灭": {"_无人_关灯", "_无人5分钟_关灯"},
+		"热水器":  {"热水器"},
+	}
+
+	for group, suffixes := range patterns {
+		for _, suffix := range suffixes {
+			if strings.Contains(alias, suffix) {
+				return group
+			}
+		}
+	}
+
+	return "其他"
+}
+
+// generateGroupREADME generates a README.md file for a group directory
+func generateGroupREADME(groupDir, groupName string) error {
+	entries, err := os.ReadDir(groupDir)
+	if err != nil {
+		return err
+	}
+
+	var automations []map[string]string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+
+		filePath := filepath.Join(groupDir, e.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		var config map[string]any
+		if err := yaml.Unmarshal(data, &config); err != nil {
+			continue
+		}
+
+		alias, _ := config["alias"].(string)
+		mode, _ := config["mode"].(string)
+		if mode == "" {
+			mode = "single"
+		}
+
+		// Extract trigger and action info
+		triggerInfo := extractTriggerInfo(config)
+		actionInfo := extractActionInfo(config)
+
+		automations = append(automations, map[string]string{
+			"name":    alias,
+			"mode":    mode,
+			"trigger": triggerInfo,
+			"action":  actionInfo,
+			"file":    e.Name(),
+		})
+	}
+
+	if len(automations) == 0 {
+		return nil
+	}
+
+	// Generate README content
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", groupName))
+	sb.WriteString(fmt.Sprintf("本目录包含 %d 个自动化配置。\n\n", len(automations)))
+
+	sb.WriteString("## 自动化列表\n\n")
+	sb.WriteString("| 名称 | 触发条件 | 动作 | 模式 |\n")
+	sb.WriteString("|------|----------|------|------|\n")
+
+	for _, a := range automations {
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", a["name"], a["trigger"], a["action"], a["mode"]))
+	}
+
+	readmePath := filepath.Join(groupDir, "README.md")
+	return os.WriteFile(readmePath, []byte(sb.String()), 0644)
+}
+
+// extractTriggerInfo extracts human-readable trigger information
+func extractTriggerInfo(config map[string]any) string {
+	triggers, ok := config["triggers"].([]any)
+	if !ok {
+		triggers, ok = config["trigger"].([]any)
+	}
+	if !ok || len(triggers) == 0 {
+		return "未知"
+	}
+
+	var parts []string
+	for _, t := range triggers {
+		trigger, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		platform, _ := trigger["platform"].(string)
+		switch platform {
+		case "state":
+			to, _ := trigger["to"].(string)
+			if to == "on" {
+				parts = append(parts, "有人检测到")
+			} else if to == "off" {
+				forDuration := ""
+				if forMap, ok := trigger["for"].(map[string]any); ok {
+					if mins, ok := forMap["minutes"].(int); ok {
+						forDuration = fmt.Sprintf(" %d分钟后", mins)
+					}
+				}
+				parts = append(parts, fmt.Sprintf("无人%s", forDuration))
+			}
+		case "time":
+			at, _ := trigger["at"].(string)
+			parts = append(parts, fmt.Sprintf("时间 %s", at))
+		}
+	}
+
+	if len(parts) == 0 {
+		return "未知"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// extractActionInfo extracts human-readable action information
+func extractActionInfo(config map[string]any) string {
+	actions, ok := config["actions"].([]any)
+	if !ok {
+		actions, ok = config["action"].([]any)
+	}
+	if !ok || len(actions) == 0 {
+		return "未知"
+	}
+
+	var parts []string
+	for _, a := range actions {
+		action, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		service, _ := action["action"].(string)
+		if service == "" {
+			service, _ = action["service"].(string)
+		}
+		target, _ := action["target"].(map[string]any)
+
+		entityCount := 0
+		if target != nil {
+			if _, ok := target["entity_id"].(string); ok {
+				entityCount = 1
+			} else if entityIDs, ok := target["entity_id"].([]any); ok {
+				entityCount = len(entityIDs)
+			}
+		}
+
+		switch service {
+		case "light.turn_on":
+			if entityCount > 1 {
+				parts = append(parts, fmt.Sprintf("开灯 (%d个)", entityCount))
+			} else {
+				parts = append(parts, "开灯")
+			}
+		case "light.turn_off":
+			if entityCount > 1 {
+				parts = append(parts, fmt.Sprintf("关灯 (%d个)", entityCount))
+			} else {
+				parts = append(parts, "关灯")
+			}
+		default:
+			parts = append(parts, service)
+		}
+	}
+
+	if len(parts) == 0 {
+		return "未知"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func printUsage() {

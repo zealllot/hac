@@ -172,7 +172,8 @@ func (s *Server) getTools() []Tool {
    - create_input_number: 创建后同步到 input_number.yaml + commit
    - rename_entity: 重命名后更新所有引用该实体的本地文件 + commit
 3. 灯光自动化中的色温、亮度等参数必须使用全局变量（input_number），不要硬编码
-4. 创建自动化时会自动为灯组设置中文 friendly_name`,
+4. 创建自动化时会自动为灯组设置中文 friendly_name
+5. ⚠️ 批量更新自动化后，必须执行 hac sync 命令来同步配置到本地并按组分类生成文档`,
 			InputSchema: InputSchema{
 				Type: "object",
 			},
@@ -712,6 +713,35 @@ entity_id 不变，只改变显示名称。`,
 				Required: []string{"name", "min", "max", "initial"},
 			},
 		},
+		{
+			Name: "migrate_automations",
+			Description: `迁移自动化文件到分组目录结构。
+
+将 automations 目录下的所有自动化文件按功能分组移动到子目录，并生成每个分组的 README.md 文档。
+
+分组规则：
+- 人来灯亮：包含 "_有人_开灯" 的自动化
+- 人走灯灭：包含 "_无人_关灯" 的自动化
+- 热水器：包含 "热水器" 的自动化
+- 其他：不匹配以上规则的自动化
+
+迁移后的目录结构：
+automations/
+├── 人来灯亮/
+│   ├── README.md
+│   ├── 主卧_有人_开灯.yaml
+│   └── ...
+├── 人走灯灭/
+│   ├── README.md
+│   ├── 主卧_无人_关灯.yaml
+│   └── ...
+└── 热水器/
+    ├── README.md
+    └── ...`,
+			InputSchema: InputSchema{
+				Type: "object",
+			},
+		},
 	}
 }
 
@@ -904,9 +934,14 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			// Delete local file and commit
 			configRepo := os.Getenv("HAC_CONFIG_REPO")
 			if configRepo != "" && alias != "" {
-				filePath := filepath.Join(configRepo, "automations", alias+".yaml")
+				// Find file in group directory
+				group := getAutomationGroup(alias)
+				groupDir := filepath.Join(configRepo, "automations", group)
+				filePath := filepath.Join(groupDir, alias+".yaml")
 				if err := os.Remove(filePath); err == nil {
-					gitAdd(configRepo, filePath)
+					// Regenerate group README
+					s.generateGroupREADME(groupDir, group)
+					gitAdd(configRepo, groupDir)
 					gitCommit(configRepo, fmt.Sprintf("Delete automation: %s", alias))
 				}
 			}
@@ -1170,6 +1205,15 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 					result = fmt.Sprintf("✓ 成功创建 input_number: %s\n初始值: %.0f %s\n范围: %.0f - %.0f\n%s", entityID, initial, unit, min, max, syncResult)
 				}
 			}
+		}
+
+	case "migrate_automations":
+		migrateResult, err := s.migrateAutomations()
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = migrateResult
 		}
 
 	default:
@@ -1449,14 +1493,17 @@ func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, 
 		return "", fmt.Errorf("automation has no alias")
 	}
 
-	// Write to automations directory
-	automationsDir := filepath.Join(configRepo, "automations")
-	if err := os.MkdirAll(automationsDir, 0755); err != nil {
-		return "", fmt.Errorf("create automations dir: %w", err)
+	// Determine group based on alias
+	group := getAutomationGroup(alias)
+
+	// Write to automations/[group] directory
+	groupDir := filepath.Join(configRepo, "automations", group)
+	if err := os.MkdirAll(groupDir, 0755); err != nil {
+		return "", fmt.Errorf("create group dir: %w", err)
 	}
 
 	filename := alias + ".yaml"
-	filePath := filepath.Join(automationsDir, filename)
+	filePath := filepath.Join(groupDir, filename)
 
 	// Marshal to YAML
 	data, err := yaml.Marshal(config)
@@ -1468,8 +1515,14 @@ func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, 
 		return "", fmt.Errorf("write file: %w", err)
 	}
 
+	// Generate/update group README
+	if err := s.generateGroupREADME(groupDir, group); err != nil {
+		// Non-fatal, just log
+		fmt.Fprintf(os.Stderr, "Warning: failed to generate README: %v\n", err)
+	}
+
 	// Git add and commit
-	if err := gitAdd(configRepo, filePath); err != nil {
+	if err := gitAdd(configRepo, groupDir); err != nil {
 		return "", fmt.Errorf("git add: %w", err)
 	}
 	commitMsg := fmt.Sprintf("Sync automation: %s", alias)
@@ -1562,31 +1615,32 @@ func (s *Server) updateEntityIDInLocalFiles(configRepo, oldEntityID, newEntityID
 	}
 
 	automationsDir := filepath.Join(configRepo, "automations")
-	entries, err := os.ReadDir(automationsDir)
-	if err != nil {
-		return nil
-	}
-
 	var updatedFiles []string
-	for _, entry := range entries {
-		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml")) {
-			continue
+
+	// Walk through all subdirectories (group folders)
+	filepath.Walk(automationsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), ".yaml") && !strings.HasSuffix(info.Name(), ".yml") {
+			return nil
 		}
 
-		filePath := filepath.Join(automationsDir, entry.Name())
-		data, err := os.ReadFile(filePath)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			return nil
 		}
 
 		content := string(data)
 		if strings.Contains(content, oldEntityID) {
 			newContent := strings.ReplaceAll(content, oldEntityID, newEntityID)
-			if err := os.WriteFile(filePath, []byte(newContent), 0644); err == nil {
-				updatedFiles = append(updatedFiles, entry.Name())
+			if err := os.WriteFile(path, []byte(newContent), 0644); err == nil {
+				relPath, _ := filepath.Rel(automationsDir, path)
+				updatedFiles = append(updatedFiles, relPath)
 			}
 		}
-	}
+		return nil
+	})
 
 	return updatedFiles
 }
@@ -1611,38 +1665,45 @@ func (s *Server) confirmAutomation(filePath string) (string, error) {
 	// Auto-set friendly names for entities used in the automation
 	s.autoSetFriendlyNames(automation)
 
-	// Move from pending to automations
+	// Move from pending to automations/[group]
 	configRepo := os.Getenv("HAC_CONFIG_REPO")
 	if configRepo == "" {
 		return "", fmt.Errorf("HAC_CONFIG_REPO not configured")
 	}
 
-	automationsDir := filepath.Join(configRepo, "automations")
-	if err := os.MkdirAll(automationsDir, 0755); err != nil {
-		return "", fmt.Errorf("create automations dir: %w", err)
+	// Get alias and determine group
+	alias, _ := automation["alias"].(string)
+	if alias == "" {
+		alias = strings.TrimSuffix(filepath.Base(filePath), ".yaml")
+	}
+	group := getAutomationGroup(alias)
+
+	groupDir := filepath.Join(configRepo, "automations", group)
+	if err := os.MkdirAll(groupDir, 0755); err != nil {
+		return "", fmt.Errorf("create group dir: %w", err)
 	}
 
 	filename := filepath.Base(filePath)
-	newPath := filepath.Join(automationsDir, filename)
+	newPath := filepath.Join(groupDir, filename)
 	if err := os.Rename(filePath, newPath); err != nil {
 		return "", fmt.Errorf("move file: %w", err)
 	}
 
-	// Git add and commit
-	name := filename
-	if alias, ok := automation["alias"].(string); ok {
-		name = alias
+	// Generate/update group README
+	if err := s.generateGroupREADME(groupDir, group); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to generate README: %v\n", err)
 	}
 
-	if err := gitAdd(configRepo, newPath); err != nil {
+	// Git add and commit
+	if err := gitAdd(configRepo, groupDir); err != nil {
 		return "", fmt.Errorf("git add: %w", err)
 	}
-	commitMsg := fmt.Sprintf("Add automation: %s", name)
+	commitMsg := fmt.Sprintf("Add automation: %s", alias)
 	if err := gitCommit(configRepo, commitMsg); err != nil {
 		return "", fmt.Errorf("git commit: %w", err)
 	}
 
-	return fmt.Sprintf("✓ Deployed automation '%s' to Home Assistant\n✓ Saved to %s\n✓ Committed to git", name, newPath), nil
+	return fmt.Sprintf("✓ Deployed automation '%s' to Home Assistant\n✓ Saved to %s\n✓ Committed to git", alias, newPath), nil
 }
 
 func (s *Server) listPending() (string, error) {
@@ -1863,4 +1924,355 @@ func gitCommit(repoPath, message string) error {
 		return fmt.Errorf("%s: %w", string(output), err)
 	}
 	return nil
+}
+
+// migrateAutomations migrates existing automation files to group directories
+func (s *Server) migrateAutomations() (string, error) {
+	configRepo := os.Getenv("HAC_CONFIG_REPO")
+	if configRepo == "" {
+		return "", fmt.Errorf("HAC_CONFIG_REPO not configured")
+	}
+
+	automationsDir := filepath.Join(configRepo, "automations")
+	entries, err := os.ReadDir(automationsDir)
+	if err != nil {
+		return "", fmt.Errorf("read automations dir: %w", err)
+	}
+
+	// Track migrations by group
+	migrations := make(map[string][]string)
+	var errors []string
+
+	for _, entry := range entries {
+		// Skip directories and non-yaml files
+		if entry.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml") {
+			continue
+		}
+
+		// Read and parse the automation file
+		oldPath := filepath.Join(automationsDir, entry.Name())
+		data, err := os.ReadFile(oldPath)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("读取 %s 失败: %v", entry.Name(), err))
+			continue
+		}
+
+		var config map[string]any
+		if err := yaml.Unmarshal(data, &config); err != nil {
+			errors = append(errors, fmt.Sprintf("解析 %s 失败: %v", entry.Name(), err))
+			continue
+		}
+
+		// Get alias and determine group
+		alias, _ := config["alias"].(string)
+		if alias == "" {
+			alias = strings.TrimSuffix(entry.Name(), ".yaml")
+		}
+		group := getAutomationGroup(alias)
+
+		// Create group directory
+		groupDir := filepath.Join(automationsDir, group)
+		if err := os.MkdirAll(groupDir, 0755); err != nil {
+			errors = append(errors, fmt.Sprintf("创建目录 %s 失败: %v", group, err))
+			continue
+		}
+
+		// Move file to group directory
+		newPath := filepath.Join(groupDir, entry.Name())
+		if err := os.Rename(oldPath, newPath); err != nil {
+			errors = append(errors, fmt.Sprintf("移动 %s 失败: %v", entry.Name(), err))
+			continue
+		}
+
+		migrations[group] = append(migrations[group], alias)
+	}
+
+	// Generate README for each group
+	for group := range migrations {
+		groupDir := filepath.Join(automationsDir, group)
+		if err := s.generateGroupREADME(groupDir, group); err != nil {
+			errors = append(errors, fmt.Sprintf("生成 %s/README.md 失败: %v", group, err))
+		}
+	}
+
+	// Git add and commit
+	if err := gitAdd(configRepo, automationsDir); err != nil {
+		return "", fmt.Errorf("git add: %w", err)
+	}
+	if err := gitCommit(configRepo, "Migrate automations to group directories"); err != nil {
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			return "", fmt.Errorf("git commit: %w", err)
+		}
+	}
+
+	// Build result message
+	var sb strings.Builder
+	sb.WriteString("✓ 自动化迁移完成\n\n")
+
+	totalMigrated := 0
+	for group, files := range migrations {
+		sb.WriteString(fmt.Sprintf("## %s (%d 个)\n", group, len(files)))
+		for _, f := range files {
+			sb.WriteString(fmt.Sprintf("  - %s\n", f))
+		}
+		sb.WriteString("\n")
+		totalMigrated += len(files)
+	}
+
+	sb.WriteString(fmt.Sprintf("共迁移 %d 个自动化到 %d 个分组\n", totalMigrated, len(migrations)))
+
+	if len(errors) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠️ %d 个错误:\n", len(errors)))
+		for _, e := range errors {
+			sb.WriteString(fmt.Sprintf("  - %s\n", e))
+		}
+	}
+
+	return sb.String(), nil
+}
+
+// getAutomationGroup determines the group/category for an automation based on its alias
+func getAutomationGroup(alias string) string {
+	// Define group patterns
+	patterns := map[string][]string{
+		"人来灯亮": {"_有人_开灯", "_有人移动_开灯"},
+		"人走灯灭": {"_无人_关灯", "_无人5分钟_关灯"},
+		"热水器":  {"热水器"},
+	}
+
+	for group, suffixes := range patterns {
+		for _, suffix := range suffixes {
+			if strings.Contains(alias, suffix) {
+				return group
+			}
+		}
+	}
+
+	// Check for room-based grouping as fallback
+	rooms := []string{"主卧", "主卫", "父母房", "儿童房", "老人房", "北卧", "客厅", "餐厅", "厨房", "洗衣房", "衣帽间", "客卫"}
+	for _, room := range rooms {
+		if strings.HasPrefix(alias, room) {
+			return room
+		}
+	}
+
+	return "其他"
+}
+
+// generateGroupREADME generates a README.md file for a group directory
+func (s *Server) generateGroupREADME(groupDir, groupName string) error {
+	// Read all automation files in the group
+	entries, err := os.ReadDir(groupDir)
+	if err != nil {
+		return err
+	}
+
+	var automations []map[string]string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+
+		filePath := filepath.Join(groupDir, e.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		var config map[string]any
+		if err := yaml.Unmarshal(data, &config); err != nil {
+			continue
+		}
+
+		alias, _ := config["alias"].(string)
+		description, _ := config["description"].(string)
+		mode, _ := config["mode"].(string)
+
+		// Extract trigger info
+		triggerInfo := extractTriggerInfo(config)
+		// Extract action info
+		actionInfo := extractActionInfo(config)
+
+		automations = append(automations, map[string]string{
+			"name":        alias,
+			"description": description,
+			"mode":        mode,
+			"trigger":     triggerInfo,
+			"action":      actionInfo,
+			"file":        e.Name(),
+		})
+	}
+
+	if len(automations) == 0 {
+		return nil
+	}
+
+	// Generate README content
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", groupName))
+	sb.WriteString(fmt.Sprintf("本目录包含 %d 个自动化配置。\n\n", len(automations)))
+
+	// Generate table
+	sb.WriteString("## 自动化列表\n\n")
+	sb.WriteString("| 名称 | 触发条件 | 动作 | 模式 |\n")
+	sb.WriteString("|------|----------|------|------|\n")
+
+	for _, a := range automations {
+		name := a["name"]
+		trigger := a["trigger"]
+		action := a["action"]
+		mode := a["mode"]
+		if mode == "" {
+			mode = "single"
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", name, trigger, action, mode))
+	}
+
+	sb.WriteString("\n## 详细说明\n\n")
+	for _, a := range automations {
+		sb.WriteString(fmt.Sprintf("### %s\n\n", a["name"]))
+		if a["description"] != "" {
+			sb.WriteString(fmt.Sprintf("%s\n\n", a["description"]))
+		}
+		sb.WriteString(fmt.Sprintf("- **文件**: `%s`\n", a["file"]))
+		sb.WriteString(fmt.Sprintf("- **触发**: %s\n", a["trigger"]))
+		sb.WriteString(fmt.Sprintf("- **动作**: %s\n", a["action"]))
+		sb.WriteString(fmt.Sprintf("- **模式**: %s\n\n", a["mode"]))
+	}
+
+	readmePath := filepath.Join(groupDir, "README.md")
+	return os.WriteFile(readmePath, []byte(sb.String()), 0644)
+}
+
+// extractTriggerInfo extracts human-readable trigger information from automation config
+func extractTriggerInfo(config map[string]any) string {
+	triggers, ok := config["trigger"].([]any)
+	if !ok || len(triggers) == 0 {
+		return "未知"
+	}
+
+	var parts []string
+	for _, t := range triggers {
+		trigger, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		platform, _ := trigger["platform"].(string)
+		switch platform {
+		case "state":
+			entityID, _ := trigger["entity_id"].(string)
+			to, _ := trigger["to"].(string)
+			// Extract friendly name from entity_id
+			entityName := extractEntityName(entityID)
+			if to == "on" {
+				parts = append(parts, fmt.Sprintf("%s 检测到", entityName))
+			} else if to == "off" {
+				forDuration := ""
+				if forMap, ok := trigger["for"].(map[string]any); ok {
+					if mins, ok := forMap["minutes"].(int); ok {
+						forDuration = fmt.Sprintf(" %d分钟后", mins)
+					}
+				}
+				parts = append(parts, fmt.Sprintf("%s 无人%s", entityName, forDuration))
+			}
+		case "time":
+			at, _ := trigger["at"].(string)
+			parts = append(parts, fmt.Sprintf("时间 %s", at))
+		default:
+			parts = append(parts, platform)
+		}
+	}
+
+	if len(parts) == 0 {
+		return "未知"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// extractActionInfo extracts human-readable action information from automation config
+func extractActionInfo(config map[string]any) string {
+	actions, ok := config["action"].([]any)
+	if !ok || len(actions) == 0 {
+		return "未知"
+	}
+
+	var parts []string
+	for _, a := range actions {
+		action, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		service, _ := action["service"].(string)
+		target, _ := action["target"].(map[string]any)
+
+		var entityNames []string
+		if target != nil {
+			if entityID, ok := target["entity_id"].(string); ok {
+				entityNames = append(entityNames, extractEntityName(entityID))
+			} else if entityIDs, ok := target["entity_id"].([]any); ok {
+				for _, id := range entityIDs {
+					if idStr, ok := id.(string); ok {
+						entityNames = append(entityNames, extractEntityName(idStr))
+					}
+				}
+			}
+		}
+
+		switch service {
+		case "light.turn_on":
+			if len(entityNames) > 3 {
+				parts = append(parts, fmt.Sprintf("开灯 (%d个)", len(entityNames)))
+			} else if len(entityNames) > 0 {
+				parts = append(parts, fmt.Sprintf("开灯: %s", strings.Join(entityNames, ", ")))
+			} else {
+				parts = append(parts, "开灯")
+			}
+		case "light.turn_off":
+			if len(entityNames) > 3 {
+				parts = append(parts, fmt.Sprintf("关灯 (%d个)", len(entityNames)))
+			} else if len(entityNames) > 0 {
+				parts = append(parts, fmt.Sprintf("关灯: %s", strings.Join(entityNames, ", ")))
+			} else {
+				parts = append(parts, "关灯")
+			}
+		case "switch.turn_on":
+			parts = append(parts, "开启开关")
+		case "switch.turn_off":
+			parts = append(parts, "关闭开关")
+		default:
+			parts = append(parts, service)
+		}
+	}
+
+	if len(parts) == 0 {
+		return "未知"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// extractEntityName extracts a friendly name from entity_id
+func extractEntityName(entityID string) string {
+	// Remove domain prefix
+	parts := strings.SplitN(entityID, ".", 2)
+	if len(parts) != 2 {
+		return entityID
+	}
+
+	name := parts[1]
+	// Try to extract Chinese name from common patterns
+	// e.g., "zhuwo_shedeng_dengzu" -> "主卧射灯灯组"
+	// For now, just return the suffix part cleaned up
+	name = strings.ReplaceAll(name, "_", " ")
+
+	// Truncate long names
+	if len(name) > 20 {
+		name = name[:20] + "..."
+	}
+
+	return name
 }
