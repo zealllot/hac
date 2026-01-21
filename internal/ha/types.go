@@ -46,6 +46,7 @@ type DeviceCapability struct {
 	EntityID   string   `json:"entity_id"`
 	Domain     string   `json:"domain"`
 	Name       string   `json:"name"`
+	Area       string   `json:"area,omitempty"`
 	State      string   `json:"state"`
 	Supports   []string `json:"supports"`
 	Attributes []string `json:"attributes"`

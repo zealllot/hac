@@ -420,7 +420,8 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			keywords := strings.Fields(strings.ToLower(keyword))
 			var matched []ha.DeviceCapability
 			for _, d := range devices {
-				searchText := strings.ToLower(d.EntityID + " " + d.Name)
+				// 搜索 entity_id、名称和区域
+				searchText := strings.ToLower(d.EntityID + " " + d.Name + " " + d.Area)
 				allMatch := true
 				for _, kw := range keywords {
 					if !strings.Contains(searchText, kw) {

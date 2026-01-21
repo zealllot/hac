@@ -123,6 +123,43 @@ func (c *Client) GetConfig() (*Config, error) {
 	return &config, nil
 }
 
+func (c *Client) RenderTemplate(template string) (string, error) {
+	body := map[string]string{"template": template}
+	data, err := c.doRequest("POST", "/api/template", body)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (c *Client) GetAreaRegistry() (map[string]string, error) {
+	// 使用模板获取所有区域
+	template := `{% for area in areas() %}{{ area }}|{{ area_name(area) }}
+{% endfor %}`
+	result, err := c.RenderTemplate(template)
+	if err != nil {
+		return nil, err
+	}
+
+	areas := make(map[string]string)
+	for _, line := range strings.Split(result, "\n") {
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) == 2 {
+			areas[parts[0]] = parts[1]
+		}
+	}
+	return areas, nil
+}
+
+func (c *Client) GetEntityArea(entityID string) (string, error) {
+	template := fmt.Sprintf(`{{ area_name(area_id('%s')) }}`, entityID)
+	result, err := c.RenderTemplate(template)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(result), nil
+}
+
 func (c *Client) GetAutomations() ([]EntityState, error) {
 	states, err := c.GetStates()
 	if err != nil {
@@ -165,6 +202,9 @@ func (c *Client) GetDevices() (map[string]DeviceCapability, error) {
 		return nil, err
 	}
 
+	// 批量获取所有实体的区域信息
+	entityAreas := c.getEntityAreas(states)
+
 	serviceMap := make(map[string][]string)
 	for _, svc := range services {
 		var names []string
@@ -196,6 +236,7 @@ func (c *Client) GetDevices() (map[string]DeviceCapability, error) {
 			EntityID:   s.EntityID,
 			Domain:     domain,
 			Name:       friendlyName,
+			Area:       entityAreas[s.EntityID],
 			State:      s.State,
 			Supports:   serviceMap[domain],
 			Attributes: attrs,
@@ -203,4 +244,28 @@ func (c *Client) GetDevices() (map[string]DeviceCapability, error) {
 	}
 
 	return devices, nil
+}
+
+func (c *Client) getEntityAreas(states []EntityState) map[string]string {
+	// 构建批量查询模板
+	var sb strings.Builder
+	sb.WriteString("{% set results = [] %}")
+	for _, s := range states {
+		sb.WriteString(fmt.Sprintf("{%% set results = results + [('%s', area_name(area_id('%s')) | default(''))] %%}", s.EntityID, s.EntityID))
+	}
+	sb.WriteString("{% for e, a in results %}{{ e }}|{{ a }}\n{% endfor %}")
+
+	result, err := c.RenderTemplate(sb.String())
+	if err != nil {
+		return make(map[string]string)
+	}
+
+	areas := make(map[string]string)
+	for _, line := range strings.Split(result, "\n") {
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) == 2 && parts[1] != "" {
+			areas[parts[0]] = parts[1]
+		}
+	}
+	return areas
 }
