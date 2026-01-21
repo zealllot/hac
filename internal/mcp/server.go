@@ -881,11 +881,24 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 
 	case "delete_automation":
 		automationID, _ := args["automation_id"].(string)
+		// First get the automation config to find the alias for local file
+		config, _ := s.haClient.GetAutomationConfig(automationID)
+		alias, _ := config["alias"].(string)
+
 		if err := s.haClient.DeleteAutomation(automationID); err != nil {
 			result = fmt.Sprintf("Error: %v", err)
 			isError = true
 		} else {
-			result = fmt.Sprintf("Successfully deleted automation: %s", automationID)
+			// Delete local file and commit
+			configRepo := os.Getenv("HAC_CONFIG_REPO")
+			if configRepo != "" && alias != "" {
+				filePath := filepath.Join(configRepo, "automations", alias+".yaml")
+				if err := os.Remove(filePath); err == nil {
+					gitAdd(configRepo, filePath)
+					gitCommit(configRepo, fmt.Sprintf("Delete automation: %s", alias))
+				}
+			}
+			result = fmt.Sprintf("✓ 成功删除自动化: %s\n✓ 已同步删除本地文件并提交 git", alias)
 		}
 
 	case "update_automation":
@@ -1083,7 +1096,16 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				result = fmt.Sprintf("Error: %v", err)
 				isError = true
 			} else {
-				result = fmt.Sprintf("✓ 成功重命名: %s -> %s", oldEntityID, newEntityID)
+				// Update local automation files that reference this entity
+				configRepo := os.Getenv("HAC_CONFIG_REPO")
+				updatedFiles := s.updateEntityIDInLocalFiles(configRepo, oldEntityID, newEntityID)
+				if len(updatedFiles) > 0 {
+					gitAdd(configRepo, filepath.Join(configRepo, "automations"))
+					gitCommit(configRepo, fmt.Sprintf("Rename entity: %s -> %s", oldEntityID, newEntityID))
+					result = fmt.Sprintf("✓ 成功重命名: %s -> %s\n✓ 已更新 %d 个本地文件并提交 git", oldEntityID, newEntityID, len(updatedFiles))
+				} else {
+					result = fmt.Sprintf("✓ 成功重命名: %s -> %s", oldEntityID, newEntityID)
+				}
 			}
 		}
 
@@ -1454,6 +1476,42 @@ func (s *Server) syncInputNumberConfig(configRepo string) (string, error) {
 	}
 
 	return fmt.Sprintf("✓ 已同步 %d 个 input_number 到本地: %s\n✓ 已提交 git commit", len(inputNumbers), filePath), nil
+}
+
+// updateEntityIDInLocalFiles updates all local automation files that reference the old entity ID
+func (s *Server) updateEntityIDInLocalFiles(configRepo, oldEntityID, newEntityID string) []string {
+	if configRepo == "" {
+		return nil
+	}
+
+	automationsDir := filepath.Join(configRepo, "automations")
+	entries, err := os.ReadDir(automationsDir)
+	if err != nil {
+		return nil
+	}
+
+	var updatedFiles []string
+	for _, entry := range entries {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml")) {
+			continue
+		}
+
+		filePath := filepath.Join(automationsDir, entry.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		content := string(data)
+		if strings.Contains(content, oldEntityID) {
+			newContent := strings.ReplaceAll(content, oldEntityID, newEntityID)
+			if err := os.WriteFile(filePath, []byte(newContent), 0644); err == nil {
+				updatedFiles = append(updatedFiles, entry.Name())
+			}
+		}
+	}
+
+	return updatedFiles
 }
 
 func (s *Server) confirmAutomation(filePath string) (string, error) {
