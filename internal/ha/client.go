@@ -191,6 +191,21 @@ func (c *Client) CreateAutomation(automation map[string]any) error {
 	return err
 }
 
+// GetAutomationConfig gets a single automation's configuration by ID
+func (c *Client) GetAutomationConfig(id string) (map[string]any, error) {
+	data, err := c.doRequest("GET", "/api/config/automation/config/"+id, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("unmarshal automation config: %w", err)
+	}
+
+	return config, nil
+}
+
 func (c *Client) UpdateAutomation(id string, automation map[string]any) error {
 	// HA uses POST for both create and update
 	_, err := c.doRequest("POST", "/api/config/automation/config/"+id, automation)
