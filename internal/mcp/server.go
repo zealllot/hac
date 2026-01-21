@@ -385,8 +385,27 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			result = fmt.Sprintf("Error: %v", err)
 			isError = true
 		} else {
-			data, _ := json.MarshalIndent(devices, "", "  ")
-			result = string(data)
+			// 按域分组，只返回 entity_id 和 name，减少数据量
+			grouped := make(map[string][]string)
+			for _, d := range devices {
+				domain := strings.Split(d.EntityID, ".")[0]
+				display := d.EntityID
+				if d.Name != "" {
+					display = fmt.Sprintf("%s (%s)", d.EntityID, d.Name)
+				}
+				grouped[domain] = append(grouped[domain], display)
+			}
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("共 %d 个实体:\n\n", len(devices)))
+			for domain, entities := range grouped {
+				sb.WriteString(fmt.Sprintf("## %s (%d)\n", domain, len(entities)))
+				for _, e := range entities {
+					sb.WriteString(fmt.Sprintf("- %s\n", e))
+				}
+				sb.WriteString("\n")
+			}
+			result = sb.String()
 		}
 
 	case "get_state":
