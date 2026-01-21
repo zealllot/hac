@@ -157,10 +157,22 @@ func (s *Server) handleRequest(req *Request) {
 }
 
 func (s *Server) getTools() []Tool {
+	// 全局说明会在第一个工具的描述中体现
 	return []Tool{
 		{
-			Name:        "get_devices",
-			Description: "获取 Home Assistant 中所有设备及其能力。返回每个设备的 entity_id、名称、当前状态、支持的服务和属性。注意：设备数量较多时可能被截断，建议使用 search_devices 按关键词搜索。",
+			Name: "get_devices",
+			Description: `获取 Home Assistant 中所有设备及其能力。返回每个设备的 entity_id、名称、当前状态、支持的服务和属性。注意：设备数量较多时可能被截断，建议使用 search_devices 按关键词搜索。
+
+【hac 全局规则】
+1. 所有修改 HA 配置的操作都会自动同步到本地 config 仓库并提交 git
+2. 自动同步的操作包括：
+   - confirm_automation: 部署后移动到 automations/ + commit
+   - update_automation: 更新后从 HA pull 配置 + commit
+   - delete_automation: 删除后删除本地文件 + commit
+   - create_input_number: 创建后同步到 input_number.yaml + commit
+   - rename_entity: 重命名后更新所有引用该实体的本地文件 + commit
+3. 灯光自动化中的色温、亮度等参数必须使用全局变量（input_number），不要硬编码
+4. 创建自动化时会自动为灯组设置中文 friendly_name`,
 			InputSchema: InputSchema{
 				Type: "object",
 			},
