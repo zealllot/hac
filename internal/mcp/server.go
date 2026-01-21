@@ -533,6 +533,55 @@ Template Sensor 可以通过 Jinja2 模板动态计算值，常用于：
 				Type: "object",
 			},
 		},
+		{
+			Name: "list_categories",
+			Description: `列出所有自动化分组（category）。
+
+返回 HA 中已创建的自动化分组列表。`,
+			InputSchema: InputSchema{
+				Type: "object",
+			},
+		},
+		{
+			Name: "create_category",
+			Description: `创建一个新的自动化分组（category）。
+
+用于在 HA 中创建分组，然后可以将自动化分配到该分组。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"name": {
+						Type:        "string",
+						Description: "分组名称，如 \"人来灯亮\"、\"热水器\"",
+					},
+					"icon": {
+						Type:        "string",
+						Description: "可选，分组图标，如 \"mdi:lightbulb\"",
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		{
+			Name: "assign_category",
+			Description: `将自动化分配到指定分组。
+
+将一个或多个自动化分配到已创建的分组中。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"entity_ids": {
+						Type:        "string",
+						Description: "自动化的 entity_id 列表，用逗号分隔，如 \"automation.xxx,automation.yyy\"",
+					},
+					"category_id": {
+						Type:        "string",
+						Description: "分组的 ID",
+					},
+				},
+				Required: []string{"entity_ids", "category_id"},
+			},
+		},
 	}
 }
 
@@ -800,6 +849,82 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			isError = true
 		} else {
 			result = "✓ Successfully reloaded all integrations"
+		}
+
+	case "list_categories":
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			categories, err := ws.ListCategories("automation")
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				if len(categories) == 0 {
+					result = "没有找到自动化分组"
+				} else {
+					var sb strings.Builder
+					sb.WriteString(fmt.Sprintf("找到 %d 个自动化分组:\n\n", len(categories)))
+					for _, cat := range categories {
+						sb.WriteString(fmt.Sprintf("- **%s** (ID: %s)\n", cat.Name, cat.CategoryID))
+					}
+					result = sb.String()
+				}
+			}
+		}
+
+	case "create_category":
+		name, _ := args["name"].(string)
+		icon, _ := args["icon"].(string)
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			cat, err := ws.CreateCategory("automation", name, icon)
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				result = fmt.Sprintf("✓ 创建分组成功: %s (ID: %s)", cat.Name, cat.CategoryID)
+			}
+		}
+
+	case "assign_category":
+		entityIDs, _ := args["entity_ids"].(string)
+		categoryID, _ := args["category_id"].(string)
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			ids := strings.Split(entityIDs, ",")
+			var successCount int
+			var errors []string
+			for _, id := range ids {
+				id = strings.TrimSpace(id)
+				if id == "" {
+					continue
+				}
+				if err := ws.AssignCategory("automation", id, categoryID); err != nil {
+					errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+				} else {
+					successCount++
+				}
+			}
+			if len(errors) > 0 {
+				result = fmt.Sprintf("✓ 成功分配 %d 个自动化\n✗ 失败 %d 个:\n%s", successCount, len(errors), strings.Join(errors, "\n"))
+				if successCount == 0 {
+					isError = true
+				}
+			} else {
+				result = fmt.Sprintf("✓ 成功将 %d 个自动化分配到分组", successCount)
+			}
 		}
 
 	default:

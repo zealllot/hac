@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Client struct {
@@ -335,4 +339,174 @@ func (c *Client) ReloadAll() error {
 		return fmt.Errorf("reload all: %w", err)
 	}
 	return nil
+}
+
+// WebSocket client for category management
+type WSClient struct {
+	conn  *websocket.Conn
+	token string
+	msgID int
+	mu    sync.Mutex
+}
+
+func (c *Client) NewWSClient() (*WSClient, error) {
+	// Convert HTTP URL to WebSocket URL
+	wsURL := strings.Replace(c.baseURL, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL += "/api/websocket"
+
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse websocket url: %w", err)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("websocket dial: %w", err)
+	}
+
+	ws := &WSClient{
+		conn:  conn,
+		token: c.token,
+		msgID: 1,
+	}
+
+	// Read auth_required message
+	var authReq map[string]any
+	if err := conn.ReadJSON(&authReq); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read auth_required: %w", err)
+	}
+
+	// Send auth message
+	authMsg := map[string]any{
+		"type":         "auth",
+		"access_token": c.token,
+	}
+	if err := conn.WriteJSON(authMsg); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("send auth: %w", err)
+	}
+
+	// Read auth result
+	var authResult map[string]any
+	if err := conn.ReadJSON(&authResult); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read auth result: %w", err)
+	}
+
+	if authResult["type"] != "auth_ok" {
+		conn.Close()
+		return nil, fmt.Errorf("auth failed: %v", authResult)
+	}
+
+	return ws, nil
+}
+
+func (ws *WSClient) Close() error {
+	return ws.conn.Close()
+}
+
+func (ws *WSClient) sendCommand(msgType string, data map[string]any) (map[string]any, error) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+
+	msg := map[string]any{
+		"id":   ws.msgID,
+		"type": msgType,
+	}
+	for k, v := range data {
+		msg[k] = v
+	}
+	ws.msgID++
+
+	if err := ws.conn.WriteJSON(msg); err != nil {
+		return nil, fmt.Errorf("send command: %w", err)
+	}
+
+	var result map[string]any
+	if err := ws.conn.ReadJSON(&result); err != nil {
+		return nil, fmt.Errorf("read result: %w", err)
+	}
+
+	if success, ok := result["success"].(bool); ok && !success {
+		return nil, fmt.Errorf("command failed: %v", result["error"])
+	}
+
+	return result, nil
+}
+
+// Category represents an automation category
+type Category struct {
+	CategoryID string `json:"category_id"`
+	Name       string `json:"name"`
+	Icon       string `json:"icon,omitempty"`
+}
+
+// ListCategories lists all automation categories
+func (ws *WSClient) ListCategories(scope string) ([]Category, error) {
+	result, err := ws.sendCommand("config/category_registry/list", map[string]any{
+		"scope": scope,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	categoriesRaw, ok := result["result"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type")
+	}
+
+	var categories []Category
+	for _, c := range categoriesRaw {
+		if cm, ok := c.(map[string]any); ok {
+			cat := Category{
+				CategoryID: cm["category_id"].(string),
+				Name:       cm["name"].(string),
+			}
+			if icon, ok := cm["icon"].(string); ok {
+				cat.Icon = icon
+			}
+			categories = append(categories, cat)
+		}
+	}
+
+	return categories, nil
+}
+
+// CreateCategory creates a new automation category
+func (ws *WSClient) CreateCategory(scope, name, icon string) (*Category, error) {
+	data := map[string]any{
+		"scope": scope,
+		"name":  name,
+	}
+	if icon != "" {
+		data["icon"] = icon
+	}
+
+	result, err := ws.sendCommand("config/category_registry/create", data)
+	if err != nil {
+		return nil, err
+	}
+
+	catRaw, ok := result["result"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type")
+	}
+
+	return &Category{
+		CategoryID: catRaw["category_id"].(string),
+		Name:       catRaw["name"].(string),
+	}, nil
+}
+
+// AssignCategory assigns a category to an entity
+func (ws *WSClient) AssignCategory(scope, entityID, categoryID string) error {
+	_, err := ws.sendCommand("config/entity_registry/update", map[string]any{
+		"entity_id": entityID,
+		"categories": map[string]any{
+			scope: categoryID,
+		},
+	})
+	return err
 }
