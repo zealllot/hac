@@ -177,7 +177,13 @@ func (c *Client) GetAutomations() ([]EntityState, error) {
 }
 
 func (c *Client) CreateAutomation(automation map[string]any) error {
-	_, err := c.doRequest("POST", "/api/config/automation/config", automation)
+	// Generate a unique ID if not provided
+	id, ok := automation["id"].(string)
+	if !ok || id == "" {
+		id = fmt.Sprintf("%d", time.Now().UnixNano())
+		automation["id"] = id
+	}
+	_, err := c.doRequest("POST", "/api/config/automation/config/"+id, automation)
 	return err
 }
 
