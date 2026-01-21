@@ -192,7 +192,8 @@ func (c *Client) CreateAutomation(automation map[string]any) error {
 }
 
 func (c *Client) UpdateAutomation(id string, automation map[string]any) error {
-	_, err := c.doRequest("PUT", "/api/config/automation/config/"+id, automation)
+	// HA uses POST for both create and update
+	_, err := c.doRequest("POST", "/api/config/automation/config/"+id, automation)
 	return err
 }
 
