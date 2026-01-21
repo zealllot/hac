@@ -17,11 +17,18 @@ type AutomationIR struct {
 }
 
 type Trigger struct {
-	Type   string `json:"type"`
-	Entity string `json:"entity,omitempty"`
-	To     string `json:"to,omitempty"`
-	From   string `json:"from,omitempty"`
-	At     string `json:"at,omitempty"`
+	Type   string     `json:"type"`
+	Entity string     `json:"entity,omitempty"`
+	To     string     `json:"to,omitempty"`
+	From   string     `json:"from,omitempty"`
+	At     string     `json:"at,omitempty"`
+	For    *ForConfig `json:"for,omitempty"`
+}
+
+type ForConfig struct {
+	Hours   int `json:"hours,omitempty"`
+	Minutes int `json:"minutes,omitempty"`
+	Seconds int `json:"seconds,omitempty"`
 }
 
 type Condition struct {

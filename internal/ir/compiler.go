@@ -69,6 +69,21 @@ func compileTrigger(t *Trigger) (map[string]any, error) {
 		if t.From != "" {
 			result["from"] = t.From
 		}
+		if t.For != nil {
+			forMap := make(map[string]any)
+			if t.For.Hours > 0 {
+				forMap["hours"] = t.For.Hours
+			}
+			if t.For.Minutes > 0 {
+				forMap["minutes"] = t.For.Minutes
+			}
+			if t.For.Seconds > 0 {
+				forMap["seconds"] = t.For.Seconds
+			}
+			if len(forMap) > 0 {
+				result["for"] = forMap
+			}
+		}
 
 	case "time":
 		result["platform"] = "time"
