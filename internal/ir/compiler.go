@@ -98,6 +98,16 @@ func compileCondition(c *Condition) (map[string]any, error) {
 			result["before"] = c.Before
 		}
 
+	case "numeric_state":
+		result["condition"] = "numeric_state"
+		result["entity_id"] = c.Entity
+		if c.Above != nil {
+			result["above"] = *c.Above
+		}
+		if c.Below != nil {
+			result["below"] = *c.Below
+		}
+
 	default:
 		return nil, fmt.Errorf("unsupported condition type: %s", c.Type)
 	}

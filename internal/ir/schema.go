@@ -24,11 +24,13 @@ type Trigger struct {
 }
 
 type Condition struct {
-	Type   string `json:"type"`
-	Entity string `json:"entity,omitempty"`
-	State  string `json:"state,omitempty"`
-	After  string `json:"after,omitempty"`
-	Before string `json:"before,omitempty"`
+	Type   string   `json:"type"`
+	Entity string   `json:"entity,omitempty"`
+	State  string   `json:"state,omitempty"`
+	After  string   `json:"after,omitempty"`
+	Before string   `json:"before,omitempty"`
+	Above  *float64 `json:"above,omitempty"`
+	Below  *float64 `json:"below,omitempty"`
 }
 
 type Constraints struct {
