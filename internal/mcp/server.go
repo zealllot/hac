@@ -455,10 +455,11 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 						if d.Area != "" {
 							area = fmt.Sprintf(" [%s]", d.Area)
 						}
-						sb.WriteString(fmt.Sprintf("- %s (%s)%s - %s\n", d.EntityID, d.Name, area, d.State))
+						sb.WriteString(fmt.Sprintf("- %s (%s)%s\n", d.EntityID, d.Name, area))
 					}
 					sb.WriteString("\n")
 				}
+				sb.WriteString("提示：如需查看设备状态，请使用 get_state 工具获取实时状态。")
 				result = sb.String()
 			}
 		}
