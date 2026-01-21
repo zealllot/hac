@@ -1258,6 +1258,9 @@ func (s *Server) confirmAutomation(filePath string) (string, error) {
 		return "", fmt.Errorf("deploy to HA: %w", err)
 	}
 
+	// Auto-set friendly names for entities used in the automation
+	s.autoSetFriendlyNames(automation)
+
 	// Move from pending to automations
 	configRepo := os.Getenv("HAC_CONFIG_REPO")
 	if configRepo == "" {
@@ -1334,6 +1337,68 @@ func (s *Server) listPending() (string, error) {
 	}
 
 	return fmt.Sprintf("📋 Pending automations (%d):\n\n%s\n\nSay \"确认 <path>\" to deploy, or \"取消 <path>\" to delete.", len(pending), strings.Join(pending, "\n\n")), nil
+}
+
+// autoSetFriendlyNames extracts light entities from automation and sets their friendly names
+// based on the automation alias (room name)
+func (s *Server) autoSetFriendlyNames(automation map[string]any) {
+	// Get room name from alias (e.g., "客厅_有人_开灯" -> "客厅")
+	alias, ok := automation["alias"].(string)
+	if !ok || alias == "" {
+		return
+	}
+
+	// Extract room name (before first underscore)
+	parts := strings.Split(alias, "_")
+	if len(parts) == 0 {
+		return
+	}
+	roomName := parts[0]
+
+	// Find light entities in action
+	actions, ok := automation["action"].([]any)
+	if !ok {
+		return
+	}
+
+	ws, err := s.haClient.NewWSClient()
+	if err != nil {
+		return
+	}
+	defer ws.Close()
+
+	for _, action := range actions {
+		actionMap, ok := action.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Check if it's a light service call
+		service, _ := actionMap["service"].(string)
+		if !strings.HasPrefix(service, "light.") {
+			continue
+		}
+
+		// Get target entity_id
+		target, ok := actionMap["target"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		entityID, ok := target["entity_id"].(string)
+		if !ok {
+			continue
+		}
+
+		// Only process light groups with long auto-generated names
+		if !strings.HasPrefix(entityID, "light.mijia_cn_group_") {
+			continue
+		}
+
+		// Set friendly name based on room name
+		friendlyName := roomName + "灯组"
+		ws.SetEntityName(entityID, friendlyName)
+	}
 }
 
 func (s *Server) cancelPending(filePath string) error {
