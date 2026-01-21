@@ -529,3 +529,34 @@ func (ws *WSClient) SetEntityName(entityID, name string) error {
 	})
 	return err
 }
+
+// CreateInputNumber creates an input_number helper
+func (ws *WSClient) CreateInputNumber(name string, min, max, step, initial float64, unit, icon string) (string, error) {
+	data := map[string]any{
+		"name":    name,
+		"min":     min,
+		"max":     max,
+		"step":    step,
+		"initial": initial,
+	}
+	if unit != "" {
+		data["unit_of_measurement"] = unit
+	}
+	if icon != "" {
+		data["icon"] = icon
+	}
+
+	result, err := ws.sendCommand("input_number/create", data)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract the created entity_id
+	if resultData, ok := result["result"].(map[string]any); ok {
+		if id, ok := resultData["id"].(string); ok {
+			return "input_number." + id, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to get created entity_id")
+}

@@ -319,12 +319,20 @@ IR 格式示例：
 以下场景可以跨房间：离家模式、回家模式、睡眠模式、紧急模式
 命名格式：全屋_[场景]_[动作]
 
+### ⚠️ 全局变量（必须使用）
+灯光自动化中的色温、亮度等参数必须使用全局变量，不要硬编码：
+- 色温：使用 input_number.global_color_temp（如果不存在则先用 create_input_number 创建）
+- 亮度：使用 input_number.global_brightness（如果不存在则先创建）
+
+在 action 的 data 中使用模板引用：
+"data": {"color_temp_kelvin": "{{ states('input_number.global_color_temp') | int }}"}
+
 ## Automation IR 格式
 {
   "name": "客厅_晚间有人_开灯",
   "trigger": {"type": "state", "entity": "binary_sensor.motion_living_room", "to": "on"},
   "conditions": [{"type": "time", "after": "19:00", "before": "23:00"}],
-  "actions": [{"action": "call_service", "service": "light.turn_on", "target": "light.living_room", "data": {"brightness_pct": 80}}],
+  "actions": [{"action": "call_service", "service": "light.turn_on", "target": "light.living_room", "data": {"color_temp_kelvin": "{{ states('input_number.global_color_temp') | int }}"}}],
   "constraints": {"mode": "restart"},
   "labels": ["人来灯亮"]
 }
@@ -643,6 +651,51 @@ entity_id 不变，只改变显示名称。`,
 					},
 				},
 				Required: []string{"entity_id", "name"},
+			},
+		},
+		{
+			Name: "create_input_number",
+			Description: `创建一个 input_number 帮助程序（全局变量）。
+
+用于存储全局配置值，如色温、亮度等，方便在多个自动化中引用。
+创建后可以在自动化中通过模板 {{ states('input_number.xxx') }} 引用。
+
+⚠️ 重要：创建灯光自动化时，应使用全局变量而非硬编码值：
+- 色温：使用 input_number.global_color_temp（如果不存在则先创建）
+- 亮度：使用 input_number.global_brightness（如果不存在则先创建）`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"name": {
+						Type:        "string",
+						Description: "变量名称，如 \"全局色温\"",
+					},
+					"min": {
+						Type:        "number",
+						Description: "最小值",
+					},
+					"max": {
+						Type:        "number",
+						Description: "最大值",
+					},
+					"step": {
+						Type:        "number",
+						Description: "步进值",
+					},
+					"initial": {
+						Type:        "number",
+						Description: "初始值",
+					},
+					"unit": {
+						Type:        "string",
+						Description: "单位，如 \"K\"（色温）、\"%\"（亮度）",
+					},
+					"icon": {
+						Type:        "string",
+						Description: "图标，如 \"mdi:thermometer\"",
+					},
+				},
+				Required: []string{"name", "min", "max", "initial"},
 			},
 		},
 	}
@@ -1039,6 +1092,33 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				isError = true
 			} else {
 				result = fmt.Sprintf("✓ 成功设置显示名称: %s -> %s", entityID, name)
+			}
+		}
+
+	case "create_input_number":
+		name, _ := args["name"].(string)
+		min, _ := args["min"].(float64)
+		max, _ := args["max"].(float64)
+		step, _ := args["step"].(float64)
+		if step == 0 {
+			step = 1
+		}
+		initial, _ := args["initial"].(float64)
+		unit, _ := args["unit"].(string)
+		icon, _ := args["icon"].(string)
+
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			entityID, err := ws.CreateInputNumber(name, min, max, step, initial, unit, icon)
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				result = fmt.Sprintf("✓ 成功创建 input_number: %s\n初始值: %.0f %s\n范围: %.0f - %.0f", entityID, initial, unit, min, max)
 			}
 		}
 
