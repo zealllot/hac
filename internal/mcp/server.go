@@ -1543,6 +1543,12 @@ func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, 
 	filename := alias + ".yaml"
 	filePath := filepath.Join(groupDir, filename)
 
+	// Remove old file from root automations/ if it exists (cleanup from old location)
+	rootFile := filepath.Join(configRepo, "automations", filename)
+	if rootFile != filePath {
+		os.Remove(rootFile) // Ignore error if file doesn't exist
+	}
+
 	// Marshal to YAML
 	data, err := yaml.Marshal(config)
 	if err != nil {
