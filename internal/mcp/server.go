@@ -754,6 +754,23 @@ automations/
 				Type: "object",
 			},
 		},
+		{
+			Name: "illumination_report",
+			Description: `生成全屋光照报告。
+
+获取全局光照传感器和各房间光照传感器的当前值，对比各房间"人来灯亮"自动化的阈值，
+生成一份完整的光照报告，包括：
+- 全局光照值
+- 各房间本地光照值
+- 各房间阈值
+- 是否应该开灯的判断
+- 系数分析（本地光照/全局光照）
+
+用于检查光照阈值设置是否合理。`,
+			InputSchema: InputSchema{
+				Type: "object",
+			},
+		},
 	}
 }
 
@@ -1226,6 +1243,15 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			isError = true
 		} else {
 			result = migrateResult
+		}
+
+	case "illumination_report":
+		reportResult, err := s.generateIlluminationReport()
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = reportResult
 		}
 
 	default:
@@ -2290,4 +2316,185 @@ func extractEntityName(entityID string) string {
 	}
 
 	return name
+}
+
+// illuminationSensorConfig defines the mapping between rooms and their illumination sensors
+type illuminationSensorConfig struct {
+	Room     string
+	SensorID string
+}
+
+// generateIlluminationReport generates a full illumination report for all rooms
+func (s *Server) generateIlluminationReport() (string, error) {
+	// Global illumination sensor (领普ES5)
+	globalSensorID := "sensor.linp_cn_blt_3_1nrd16kq8cg00_es5b_illumination_p_2_1005"
+
+	// Room illumination sensors mapping
+	roomSensors := []illuminationSensorConfig{
+		{"客厅", "sensor.izq_cn_1205048022_24n_illumination_p_2_2"},
+		{"餐厅", "sensor.izq_cn_1189446445_24n_illumination_p_2_2"},
+		{"主卧", "sensor.izq_cn_1205048835_24n_illumination_p_2_2"},
+		{"北卧", "sensor.izq_cn_1189446822_24n_illumination_p_2_2"},
+		{"儿童房", "sensor.izq_cn_1205048242_24n_illumination_p_2_2"},
+		{"父母房", "sensor.izq_cn_1189446888_24n_illumination_p_2_2"},
+		{"老人房", "sensor.izq_cn_1205048236_24n_illumination_p_2_2"},
+		{"厨房", "sensor.izq_cn_1205048246_24n_illumination_p_2_2"},
+		{"主卧门口过道", "sensor.izq_cn_1189445770_24n_illumination_p_2_2"},
+		{"客卫门口过道", "sensor.izq_cn_1189446350_24n_illumination_p_2_2"},
+		{"洗衣房", "sensor.izq_cn_1205048024_24n_illumination_p_2_2"},
+		{"衣帽间", "sensor.izq_cn_1205048226_24n_illumination_p_2_2"},
+		{"客厅阳台过道", "sensor.izq_cn_1205048235_24n_illumination_p_2_2"},
+		{"父母房卫生间", "sensor.izq_cn_1189445850_24n_illumination_p_2_2"},
+		{"父母房过道", "sensor.linp_cn_blt_3_1nrd8nqto4002_es5b_illumination_p_2_1005"},
+		{"客卫", "sensor.izq_cn_1138358875_24n_illumination_p_2_2"},
+	}
+
+	// Get global illumination
+	globalState, err := s.haClient.GetState(globalSensorID)
+	if err != nil {
+		return "", fmt.Errorf("获取全局光照失败: %w", err)
+	}
+	globalIllum := parseFloat(globalState.State)
+
+	// Read thresholds from automation files
+	configRepo := os.Getenv("HAC_CONFIG_REPO")
+	thresholds := make(map[string]float64)
+	if configRepo != "" {
+		automationDir := filepath.Join(configRepo, "automations", "人来灯亮")
+		entries, _ := os.ReadDir(automationDir)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+				continue
+			}
+			filePath := filepath.Join(automationDir, e.Name())
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+			var config map[string]any
+			if err := yaml.Unmarshal(data, &config); err != nil {
+				continue
+			}
+			alias, _ := config["alias"].(string)
+			// Extract room name from alias (e.g., "客厅_有人_开灯" -> "客厅")
+			roomName := strings.Split(alias, "_")[0]
+
+			// Find threshold in conditions
+			if conditions, ok := config["conditions"].([]any); ok {
+				for _, c := range conditions {
+					if cond, ok := c.(map[string]any); ok {
+						if cond["condition"] == "numeric_state" {
+							if below, ok := cond["below"].(int); ok {
+								thresholds[roomName] = float64(below)
+							} else if below, ok := cond["below"].(float64); ok {
+								thresholds[roomName] = below
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Build report
+	var sb strings.Builder
+	sb.WriteString("## 全屋光照报告\n\n")
+	sb.WriteString(fmt.Sprintf("**全局光照（领普ES5）：%.0f lx**\n\n", globalIllum))
+
+	sb.WriteString("| 区域 | 本地光照 (lx) | 阈值 (lx) | 全局 vs 阈值 | 是否应开灯 |\n")
+	sb.WriteString("|------|-------------|-----------|-------------|------------|\n")
+
+	type roomData struct {
+		Room       string
+		LocalIllum float64
+		Threshold  float64
+		ShouldOn   bool
+		Ratio      float64
+	}
+	var roomDataList []roomData
+
+	for _, rs := range roomSensors {
+		state, err := s.haClient.GetState(rs.SensorID)
+		localIllum := float64(0)
+		if err == nil {
+			localIllum = parseFloat(state.State)
+		}
+
+		threshold := thresholds[rs.Room]
+		shouldOn := globalIllum < threshold
+		ratio := float64(0)
+		if globalIllum > 0 {
+			ratio = localIllum / globalIllum
+		}
+
+		roomDataList = append(roomDataList, roomData{
+			Room:       rs.Room,
+			LocalIllum: localIllum,
+			Threshold:  threshold,
+			ShouldOn:   shouldOn,
+			Ratio:      ratio,
+		})
+
+		shouldOnStr := "❌ 不开灯"
+		if shouldOn {
+			shouldOnStr = "✅ **应开灯**"
+		}
+		comparison := fmt.Sprintf("%.0f > %.0f", globalIllum, threshold)
+		if shouldOn {
+			comparison = fmt.Sprintf("%.0f < %.0f", globalIllum, threshold)
+		}
+
+		sb.WriteString(fmt.Sprintf("| **%s** | %.0f | %.0f | %s | %s |\n",
+			rs.Room, localIllum, threshold, comparison, shouldOnStr))
+	}
+
+	// Summary section
+	sb.WriteString("\n---\n\n### 当前会开灯的房间\n")
+	hasRoomToLight := false
+	for _, rd := range roomDataList {
+		if rd.ShouldOn {
+			sb.WriteString(fmt.Sprintf("- **%s**（本地 %.0f lx，阈值 %.0f）\n", rd.Room, rd.LocalIllum, rd.Threshold))
+			hasRoomToLight = true
+		}
+	}
+	if !hasRoomToLight {
+		sb.WriteString("无\n")
+	}
+
+	// Ratio analysis
+	sb.WriteString("\n### 系数分析（本地光照 / 全局光照）\n")
+	sb.WriteString("| 区域 | 系数 | 说明 |\n")
+	sb.WriteString("|------|------|------|\n")
+
+	// Sort by ratio descending
+	for i := 0; i < len(roomDataList)-1; i++ {
+		for j := i + 1; j < len(roomDataList); j++ {
+			if roomDataList[j].Ratio > roomDataList[i].Ratio {
+				roomDataList[i], roomDataList[j] = roomDataList[j], roomDataList[i]
+			}
+		}
+	}
+
+	for _, rd := range roomDataList {
+		desc := "采光中等"
+		if rd.Ratio > 1.0 {
+			desc = "采光好"
+		} else if rd.Ratio > 0.5 {
+			desc = "采光中等"
+		} else if rd.Ratio > 0.2 {
+			desc = "采光较差"
+		} else {
+			desc = "采光很差"
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %.2f | %s |\n", rd.Room, rd.Ratio, desc))
+	}
+
+	return sb.String(), nil
+}
+
+// parseFloat parses a string to float64, returns 0 on error
+func parseFloat(s string) float64 {
+	var f float64
+	fmt.Sscanf(s, "%f", &f)
+	return f
 }
