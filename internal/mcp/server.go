@@ -2379,15 +2379,19 @@ func (s *Server) generateIlluminationReport() (string, error) {
 			// Extract room name from alias (e.g., "客厅_有人_开灯" -> "客厅")
 			roomName := strings.Split(alias, "_")[0]
 
-			// Find threshold in conditions
+			// Find threshold in conditions (only for illumination sensor)
 			if conditions, ok := config["conditions"].([]any); ok {
 				for _, c := range conditions {
 					if cond, ok := c.(map[string]any); ok {
 						if cond["condition"] == "numeric_state" {
-							if below, ok := cond["below"].(int); ok {
-								thresholds[roomName] = float64(below)
-							} else if below, ok := cond["below"].(float64); ok {
-								thresholds[roomName] = below
+							// Only get threshold for illumination sensor
+							entityID, _ := cond["entity_id"].(string)
+							if strings.Contains(entityID, "illumination") || entityID == globalSensorID {
+								if below, ok := cond["below"].(int); ok {
+									thresholds[roomName] = float64(below)
+								} else if below, ok := cond["below"].(float64); ok {
+									thresholds[roomName] = below
+								}
 							}
 						}
 					}
