@@ -173,7 +173,8 @@ func (s *Server) getTools() []Tool {
    - rename_entity: 重命名后更新所有引用该实体的本地文件 + commit
 3. 灯光自动化中的色温、亮度等参数必须使用全局变量（input_number），不要硬编码
 4. 创建自动化时会自动为灯组设置中文 friendly_name
-5. ⚠️ 批量更新自动化后，必须执行 hac sync 命令来同步配置到本地并按组分类生成文档`,
+5. ⚠️ 批量更新自动化后，必须执行 hac sync 命令来同步配置到本地并按组分类生成文档
+6. ⚠️ 修改自动化配置（如阈值、条件、触发器等）前必须先与用户确认，得到用户同意后才能提交修改`,
 			InputSchema: InputSchema{
 				Type: "object",
 			},
