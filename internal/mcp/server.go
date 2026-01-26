@@ -440,6 +440,25 @@ labels: 可选，用于分组自动化，如 ["人来灯亮"]、["热水器"]`,
 			},
 		},
 		{
+			Name: "sync_automations",
+			Description: `从 Home Assistant 同步自动化配置到本地。
+
+用于将 HA 中的自动化配置拉取到本地 ha-config 仓库。
+- 如果不指定 automation_ids，则同步所有自动化
+- 如果指定 automation_ids，则只同步指定的自动化
+
+同步后会自动提交 git commit。`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"automation_ids": {
+						Type:        "string",
+						Description: "要同步的自动化 ID 列表，用逗号分隔。留空则同步所有自动化。",
+					},
+				},
+			},
+		},
+		{
 			Name:        "cancel_pending",
 			Description: "取消/删除一个待确认的自动化草稿。",
 			InputSchema: InputSchema{
@@ -1021,6 +1040,16 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			result = fmt.Sprintf("✓ Deleted pending automation: %s", filePath)
 		}
 
+	case "sync_automations":
+		automationIDs, _ := args["automation_ids"].(string)
+		syncResult, err := s.syncAutomations(automationIDs)
+		if err != nil {
+			result = fmt.Sprintf("Error: %v", err)
+			isError = true
+		} else {
+			result = syncResult
+		}
+
 	case "create_template_sensor":
 		name, _ := args["name"].(string)
 		uniqueID, _ := args["unique_id"].(string)
@@ -1579,6 +1608,70 @@ func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, 
 	}
 
 	return fmt.Sprintf("✓ 已同步自动化配置到本地: %s\n✓ 已提交 git commit", filePath), nil
+}
+
+func (s *Server) syncAutomations(automationIDsStr string) (string, error) {
+	configRepo := os.Getenv("HAC_CONFIG_REPO")
+	if configRepo == "" {
+		return "", fmt.Errorf("HAC_CONFIG_REPO environment variable not set")
+	}
+
+	var automationIDs []string
+	if automationIDsStr != "" {
+		// Parse comma-separated IDs
+		for _, id := range strings.Split(automationIDsStr, ",") {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				automationIDs = append(automationIDs, id)
+			}
+		}
+	}
+
+	// If no specific IDs provided, get all automations
+	if len(automationIDs) == 0 {
+		automations, err := s.haClient.GetAutomations()
+		if err != nil {
+			return "", fmt.Errorf("get automations: %w", err)
+		}
+		for _, a := range automations {
+			if id, ok := a.Attributes["id"].(string); ok && id != "" {
+				automationIDs = append(automationIDs, id)
+			}
+		}
+	}
+
+	if len(automationIDs) == 0 {
+		return "没有找到需要同步的自动化", nil
+	}
+
+	var synced []string
+	var errors []string
+
+	for _, id := range automationIDs {
+		result, err := s.syncAutomationConfig(configRepo, id)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+		} else {
+			// Extract alias from result
+			synced = append(synced, result)
+		}
+	}
+
+	// Final git commit for all synced automations
+	if len(synced) > 0 {
+		gitAdd(configRepo, filepath.Join(configRepo, "automations"))
+		gitCommit(configRepo, fmt.Sprintf("Sync %d automations from HA", len(synced)))
+	}
+
+	var resultParts []string
+	if len(synced) > 0 {
+		resultParts = append(resultParts, fmt.Sprintf("✓ 成功同步 %d 个自动化", len(synced)))
+	}
+	if len(errors) > 0 {
+		resultParts = append(resultParts, fmt.Sprintf("✗ %d 个同步失败:\n  - %s", len(errors), strings.Join(errors, "\n  - ")))
+	}
+
+	return strings.Join(resultParts, "\n"), nil
 }
 
 func (s *Server) syncInputNumberConfig(configRepo string) (string, error) {
