@@ -1555,6 +1555,10 @@ func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, 
 		return "", fmt.Errorf("get automation config: %w", err)
 	}
 
+	// Normalize HA config fields for local YAML.
+	// HA may return trigger entries with key `trigger` instead of `platform`.
+	normalizeAutomationConfig(config)
+
 	// Get alias for filename
 	alias, ok := config["alias"].(string)
 	if !ok || alias == "" {
@@ -1608,6 +1612,36 @@ func (s *Server) syncAutomationConfig(configRepo, automationID string) (string, 
 	}
 
 	return fmt.Sprintf("✓ 已同步自动化配置到本地: %s\n✓ 已提交 git commit", filePath), nil
+}
+
+func normalizeAutomationConfig(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		// If this looks like a trigger entry, normalize `trigger` -> `platform`.
+		if plat, ok := t["trigger"].(string); ok {
+			if _, hasPlatform := t["platform"]; !hasPlatform && isKnownTriggerPlatform(plat) {
+				t["platform"] = plat
+				delete(t, "trigger")
+			}
+		}
+
+		for _, vv := range t {
+			normalizeAutomationConfig(vv)
+		}
+	case []any:
+		for _, vv := range t {
+			normalizeAutomationConfig(vv)
+		}
+	}
+}
+
+func isKnownTriggerPlatform(v string) bool {
+	switch v {
+	case "state", "numeric_state", "time", "event", "sun", "homeassistant", "template", "time_pattern", "zone", "device", "mqtt", "webhook":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) syncAutomations(automationIDsStr string) (string, error) {
