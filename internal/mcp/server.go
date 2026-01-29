@@ -2182,6 +2182,7 @@ func getAutomationGroup(alias string) string {
 		"马桶换气": {"_坐马桶_开换气", "_无人_关换气"},
 		"睡眠模式": {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式"},
 		"光暗灯亮": {"_光暗_开灯"},
+		"衣柜灯":  {"_衣柜光照强_开灯", "_衣柜光照弱_关灯"},
 	}
 
 	for group, suffixes := range patterns {
