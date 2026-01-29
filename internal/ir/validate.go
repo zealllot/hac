@@ -153,7 +153,19 @@ func (v *Validator) ValidateAutomation(ir *AutomationIR) ValidationResult {
 		})
 	}
 
-	errors = append(errors, v.validateTrigger(&ir.Trigger)...)
+	if len(ir.Triggers) == 0 {
+		errors = append(errors, ValidationError{
+			Field:   "trigger",
+			Message: "at least one trigger is required",
+		})
+	}
+	for i, t := range ir.Triggers {
+		triggerErrors := v.validateTrigger(&t)
+		for j := range triggerErrors {
+			triggerErrors[j].Field = fmt.Sprintf("trigger[%d].%s", i, triggerErrors[j].Field)
+		}
+		errors = append(errors, triggerErrors...)
+	}
 
 	for i, cond := range ir.Conditions {
 		condErrors := v.validateCondition(&cond)

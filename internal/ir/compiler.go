@@ -27,11 +27,13 @@ func CompileAutomation(ir *AutomationIR) (*HAAutomation, error) {
 		ha.Mode = "single"
 	}
 
-	trigger, err := compileTrigger(&ir.Trigger)
-	if err != nil {
-		return nil, fmt.Errorf("compile trigger: %w", err)
+	for i, t := range ir.Triggers {
+		trigger, err := compileTrigger(&t)
+		if err != nil {
+			return nil, fmt.Errorf("compile trigger[%d]: %w", i, err)
+		}
+		ha.Trigger = append(ha.Trigger, trigger)
 	}
-	ha.Trigger = []map[string]any{trigger}
 
 	for _, cond := range ir.Conditions {
 		haCond, err := compileCondition(&cond)
