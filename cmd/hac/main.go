@@ -629,7 +629,26 @@ func generateGroupREADME(groupDir, groupName string) error {
 		return err
 	}
 
-	var automations []map[string]string
+	// Mode explanations
+	modeNames := map[string]string{
+		"single":   "单次执行",
+		"restart":  "重新开始",
+		"queued":   "排队执行",
+		"parallel": "并行执行",
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", groupName))
+
+	var count int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		count++
+	}
+	sb.WriteString(fmt.Sprintf("本目录包含 %d 个自动化配置。\n\n", count))
+
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
@@ -651,39 +670,286 @@ func generateGroupREADME(groupDir, groupName string) error {
 		if mode == "" {
 			mode = "single"
 		}
+		modeName := modeNames[mode]
+		if modeName == "" {
+			modeName = mode
+		}
 
-		// Extract trigger and action info
-		triggerInfo := extractTriggerInfo(config)
-		actionInfo := extractActionInfo(config)
+		sb.WriteString(fmt.Sprintf("## %s\n\n", alias))
+		sb.WriteString(fmt.Sprintf("- **文件**: `%s`\n", e.Name()))
+		sb.WriteString(fmt.Sprintf("- **模式**: %s\n", modeName))
 
-		automations = append(automations, map[string]string{
-			"name":    alias,
-			"mode":    mode,
-			"trigger": triggerInfo,
-			"action":  actionInfo,
-			"file":    e.Name(),
-		})
-	}
+		// Extract detailed trigger info
+		triggerDetail := extractTriggerDetail(config)
+		sb.WriteString(fmt.Sprintf("- **触发条件**: %s\n", triggerDetail))
 
-	if len(automations) == 0 {
-		return nil
-	}
+		// Extract detailed action info
+		actionDetail := extractActionDetail(config)
+		sb.WriteString(fmt.Sprintf("- **执行动作**:\n%s", actionDetail))
 
-	// Generate README content
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s\n\n", groupName))
-	sb.WriteString(fmt.Sprintf("本目录包含 %d 个自动化配置。\n\n", len(automations)))
-
-	sb.WriteString("## 自动化列表\n\n")
-	sb.WriteString("| 名称 | 触发条件 | 动作 | 模式 |\n")
-	sb.WriteString("|------|----------|------|------|\n")
-
-	for _, a := range automations {
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", a["name"], a["trigger"], a["action"], a["mode"]))
+		sb.WriteString("\n")
 	}
 
 	readmePath := filepath.Join(groupDir, "README.md")
 	return os.WriteFile(readmePath, []byte(sb.String()), 0644)
+}
+
+// extractTriggerDetail extracts detailed trigger information
+func extractTriggerDetail(config map[string]any) string {
+	triggers, ok := config["triggers"].([]any)
+	if !ok {
+		triggers, ok = config["trigger"].([]any)
+	}
+	if !ok || len(triggers) == 0 {
+		return "未配置触发器"
+	}
+
+	var parts []string
+	for _, t := range triggers {
+		trigger, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		platform, _ := trigger["platform"].(string)
+		// Also check "trigger" key for platform (HA uses both)
+		if platform == "" {
+			platform, _ = trigger["trigger"].(string)
+		}
+		// Handle entity_id as string or array
+		entityID, _ := trigger["entity_id"].(string)
+		if entityID == "" {
+			if entityIDs, ok := trigger["entity_id"].([]any); ok && len(entityIDs) > 0 {
+				entityID, _ = entityIDs[0].(string)
+			}
+		}
+		to, _ := trigger["to"].(string)
+		// Check for attribute-based triggers (like virtual events)
+		attribute, _ := trigger["attribute"].(string)
+
+		switch platform {
+		case "state":
+			entityName := extractEntityNameDetail(entityID)
+			// For virtual event triggers
+			if attribute != "" && strings.Contains(entityID, "virtual_event") {
+				parts = append(parts, fmt.Sprintf("当收到语音指令「%s」时", to))
+			} else if to == "on" {
+				parts = append(parts, fmt.Sprintf("当 %s 检测到有人时", entityName))
+			} else if to == "off" {
+				forDuration := ""
+				if forMap, ok := trigger["for"].(map[string]any); ok {
+					if mins, ok := forMap["minutes"].(int); ok {
+						forDuration = fmt.Sprintf(" %d分钟", mins)
+					}
+				}
+				parts = append(parts, fmt.Sprintf("当 %s 无人%s后", entityName, forDuration))
+			} else if to == "1.0" || to == "1" {
+				parts = append(parts, fmt.Sprintf("当 %s 开启时", entityName))
+			} else if to == "0.0" || to == "0" {
+				parts = append(parts, fmt.Sprintf("当 %s 关闭时", entityName))
+			} else if to != "" {
+				parts = append(parts, fmt.Sprintf("当 %s 变为 %s 时", entityName, to))
+			} else {
+				parts = append(parts, fmt.Sprintf("当 %s 状态变化时", entityName))
+			}
+		case "time":
+			at, _ := trigger["at"].(string)
+			parts = append(parts, fmt.Sprintf("每天 %s", at))
+		case "numeric_state":
+			entityName := extractEntityNameDetail(entityID)
+			below, _ := trigger["below"].(string)
+			above, _ := trigger["above"].(string)
+			if below != "" {
+				parts = append(parts, fmt.Sprintf("当 %s 低于 %s 时", entityName, below))
+			} else if above != "" {
+				parts = append(parts, fmt.Sprintf("当 %s 高于 %s 时", entityName, above))
+			}
+		}
+	}
+
+	if len(parts) == 0 {
+		return "未配置触发器"
+	}
+	return strings.Join(parts, "；")
+}
+
+// extractActionDetail extracts detailed action information
+func extractActionDetail(config map[string]any) string {
+	actions, ok := config["actions"].([]any)
+	if !ok {
+		actions, ok = config["action"].([]any)
+	}
+	if !ok || len(actions) == 0 {
+		return "  - 无动作\n"
+	}
+
+	var sb strings.Builder
+	for _, a := range actions {
+		action, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Skip delay actions
+		if delay, hasDelay := action["delay"].(map[string]any); hasDelay {
+			if secs, ok := delay["seconds"].(int); ok {
+				sb.WriteString(fmt.Sprintf("  - 等待 %d 秒\n", secs))
+			}
+			continue
+		}
+
+		service, _ := action["action"].(string)
+		if service == "" {
+			service, _ = action["service"].(string)
+		}
+		if service == "" {
+			continue
+		}
+
+		target, _ := action["target"].(map[string]any)
+		data, _ := action["data"].(map[string]any)
+
+		var entityID string
+		if target != nil {
+			entityID, _ = target["entity_id"].(string)
+		}
+
+		switch service {
+		case "light.turn_on":
+			entityName := extractEntityNameDetail(entityID)
+			sb.WriteString(fmt.Sprintf("  - 打开 %s\n", entityName))
+		case "light.turn_off":
+			entityName := extractEntityNameDetail(entityID)
+			sb.WriteString(fmt.Sprintf("  - 关闭 %s\n", entityName))
+		case "cover.open_cover":
+			entityName := extractEntityNameDetail(entityID)
+			sb.WriteString(fmt.Sprintf("  - 打开 %s\n", entityName))
+		case "cover.close_cover":
+			entityName := extractEntityNameDetail(entityID)
+			sb.WriteString(fmt.Sprintf("  - 关闭 %s\n", entityName))
+		case "automation.turn_on":
+			entityName := extractEntityNameDetail(entityID)
+			sb.WriteString(fmt.Sprintf("  - 启用自动化: %s\n", entityName))
+		case "automation.turn_off":
+			entityName := extractEntityNameDetail(entityID)
+			sb.WriteString(fmt.Sprintf("  - 禁用自动化: %s\n", entityName))
+		case "input_number.set_value":
+			entityName := extractEntityNameDetail(entityID)
+			if data != nil {
+				if val, ok := data["value"].(float64); ok {
+					sb.WriteString(fmt.Sprintf("  - 设置 %s 为 %.0f\n", entityName, val))
+				} else if val, ok := data["value"].(int); ok {
+					sb.WriteString(fmt.Sprintf("  - 设置 %s 为 %d\n", entityName, val))
+				} else {
+					sb.WriteString(fmt.Sprintf("  - 设置 %s\n", entityName))
+				}
+			} else {
+				sb.WriteString(fmt.Sprintf("  - 设置 %s\n", entityName))
+			}
+		case "media_player.volume_set":
+			entityName := extractEntityNameDetail(entityID)
+			if data != nil {
+				if vol, ok := data["volume_level"].(float64); ok {
+					sb.WriteString(fmt.Sprintf("  - 设置 %s 音量为 %.0f%%\n", entityName, vol*100))
+				} else {
+					sb.WriteString(fmt.Sprintf("  - 设置 %s 音量\n", entityName))
+				}
+			}
+		case "text.set_value":
+			if data != nil {
+				if val, ok := data["value"].(string); ok {
+					// Truncate long text
+					if len(val) > 50 {
+						val = val[:50] + "..."
+					}
+					// Remove template syntax for display
+					if strings.Contains(val, "{{") {
+						sb.WriteString("  - 语音播报（随机内容）\n")
+					} else {
+						sb.WriteString(fmt.Sprintf("  - 语音播报: \"%s\"\n", val))
+					}
+				}
+			}
+		default:
+			sb.WriteString(fmt.Sprintf("  - %s\n", service))
+		}
+	}
+
+	if sb.Len() == 0 {
+		return "  - 无动作\n"
+	}
+	return sb.String()
+}
+
+// extractEntityNameDetail extracts a detailed friendly name from entity_id
+func extractEntityNameDetail(entityID string) string {
+	if entityID == "" {
+		return "未知"
+	}
+
+	parts := strings.SplitN(entityID, ".", 2)
+	if len(parts) != 2 {
+		return entityID
+	}
+
+	domain := parts[0]
+	name := parts[1]
+
+	// Common entity name mappings
+	nameMap := map[string]string{
+		// 模式开关
+		"hui_ke_mo_shi":                             "会客模式",
+		"guan_ying_mo_shi":                          "观影模式",
+		"quan_wu_yin_liang":                         "全屋音量",
+		"global_brightness":                         "全局亮度",
+		"global_color_temp":                         "全局色温",
+		"zhu_wo_shui_mian_mo_shi":                   "主卧睡眠模式",
+		"er_tong_fang_shui_mian_mo_shi":             "儿童房睡眠模式",
+		"fu_mu_fang_shui_mian_mo_shi":               "父母房睡眠模式",
+		"lao_ren_fang_shui_mian_mo_shi":             "老人房睡眠模式",
+		"quan_wu_deng_guang_zi_dong_hua_zhuang_tai": "全屋灯光自动化状态",
+		// 自动化名称
+		"can_ting_wu_ren_guan_deng":                 "餐厅无人关灯",
+		"ke_ting_wu_ren_guan_deng":                  "客厅无人关灯",
+		"ke_wei_men_kou_guo_dao_wu_ren_guan_deng":   "客卫门口过道无人关灯",
+		"ke_ting_yang_tai_guo_dao_wu_ren_guan_deng": "客厅阳台过道无人关灯",
+		"xi_yi_fang_wu_ren_guan_deng":               "洗衣房无人关灯",
+		"zhu_wo_men_kou_guo_dao_wu_ren_guan_deng":   "主卧门口过道无人关灯",
+	}
+
+	if friendly, ok := nameMap[name]; ok {
+		return friendly
+	}
+
+	// For automations, extract the friendly name
+	if domain == "automation" {
+		name = strings.ReplaceAll(name, "_", " ")
+		return name
+	}
+
+	// For binary sensors
+	if domain == "binary_sensor" {
+		return "人体传感器"
+	}
+
+	// For covers - simplify the name
+	if domain == "cover" {
+		return "窗帘"
+	}
+
+	// For lights - simplify the name
+	if domain == "light" {
+		return "灯"
+	}
+
+	// For media players
+	if domain == "media_player" {
+		return "音箱"
+	}
+
+	// Default
+	name = strings.ReplaceAll(name, "_", " ")
+	return name
 }
 
 // extractTriggerInfo extracts human-readable trigger information
