@@ -605,3 +605,126 @@ func (ws *WSClient) CreateTemplateSensor(name, stateTemplate, unit, deviceClass,
 
 	return "", fmt.Errorf("failed to get created entity_id from result: %v", result)
 }
+
+// DeviceRegistryEntry represents a device in the device registry
+type DeviceRegistryEntry struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	NameByUser   string  `json:"name_by_user,omitempty"`
+	Manufacturer string  `json:"manufacturer,omitempty"`
+	Model        string  `json:"model,omitempty"`
+	AreaID       string  `json:"area_id,omitempty"`
+	Identifiers  [][]any `json:"identifiers,omitempty"`
+}
+
+// EntityRegistryEntry represents an entity in the entity registry
+type EntityRegistryEntry struct {
+	EntityID     string `json:"entity_id"`
+	UniqueID     string `json:"unique_id,omitempty"`
+	Platform     string `json:"platform,omitempty"`
+	DeviceID     string `json:"device_id,omitempty"`
+	AreaID       string `json:"area_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	OriginalName string `json:"original_name,omitempty"`
+}
+
+// GetDeviceRegistry gets all devices from the device registry
+func (ws *WSClient) GetDeviceRegistry() ([]DeviceRegistryEntry, error) {
+	result, err := ws.sendCommand("config/device_registry/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+
+	devicesRaw, ok := result["result"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type")
+	}
+
+	var devices []DeviceRegistryEntry
+	for _, d := range devicesRaw {
+		if dm, ok := d.(map[string]any); ok {
+			dev := DeviceRegistryEntry{}
+			if id, ok := dm["id"].(string); ok {
+				dev.ID = id
+			}
+			if name, ok := dm["name"].(string); ok {
+				dev.Name = name
+			}
+			if nameByUser, ok := dm["name_by_user"].(string); ok {
+				dev.NameByUser = nameByUser
+			}
+			if manufacturer, ok := dm["manufacturer"].(string); ok {
+				dev.Manufacturer = manufacturer
+			}
+			if model, ok := dm["model"].(string); ok {
+				dev.Model = model
+			}
+			if areaID, ok := dm["area_id"].(string); ok {
+				dev.AreaID = areaID
+			}
+			devices = append(devices, dev)
+		}
+	}
+
+	return devices, nil
+}
+
+// GetEntityRegistry gets all entities from the entity registry
+func (ws *WSClient) GetEntityRegistry() ([]EntityRegistryEntry, error) {
+	result, err := ws.sendCommand("config/entity_registry/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+
+	entitiesRaw, ok := result["result"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type")
+	}
+
+	var entities []EntityRegistryEntry
+	for _, e := range entitiesRaw {
+		if em, ok := e.(map[string]any); ok {
+			ent := EntityRegistryEntry{}
+			if entityID, ok := em["entity_id"].(string); ok {
+				ent.EntityID = entityID
+			}
+			if uniqueID, ok := em["unique_id"].(string); ok {
+				ent.UniqueID = uniqueID
+			}
+			if platform, ok := em["platform"].(string); ok {
+				ent.Platform = platform
+			}
+			if deviceID, ok := em["device_id"].(string); ok {
+				ent.DeviceID = deviceID
+			}
+			if areaID, ok := em["area_id"].(string); ok {
+				ent.AreaID = areaID
+			}
+			if name, ok := em["name"].(string); ok {
+				ent.Name = name
+			}
+			if originalName, ok := em["original_name"].(string); ok {
+				ent.OriginalName = originalName
+			}
+			entities = append(entities, ent)
+		}
+	}
+
+	return entities, nil
+}
+
+// GetEntityDeviceInfo gets the device_id and related info for an entity
+func (ws *WSClient) GetEntityDeviceInfo(entityID string) (*EntityRegistryEntry, error) {
+	entities, err := ws.GetEntityRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, e := range entities {
+		if e.EntityID == entityID {
+			return &e, nil
+		}
+	}
+
+	return nil, fmt.Errorf("entity not found: %s", entityID)
+}

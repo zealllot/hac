@@ -791,6 +791,30 @@ automations/
 				Type: "object",
 			},
 		},
+		{
+			Name: "get_entity_device_info",
+			Description: `获取实体的设备信息，包括 device_id 和 entity 内部 ID。
+
+用于获取创建自动化时需要的 device_id 和 entity_id（内部 ID，非完整 entity_id）。
+例如小爱音箱的 TTS 功能需要使用 device_id 和 text entity 的内部 ID。
+
+返回信息包括：
+- entity_id: 完整的实体 ID
+- device_id: 设备 ID（用于自动化中的 device_id 字段）
+- unique_id: 实体的唯一 ID（通常就是内部 entity_id）
+- platform: 平台名称
+- name: 显示名称`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"entity_id": {
+						Type:        "string",
+						Description: "实体的 entity_id，如 media_player.xiaomi_cn_866197674_oh2p",
+					},
+				},
+				Required: []string{"entity_id"},
+			},
+		},
 	}
 }
 
@@ -1282,6 +1306,24 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			isError = true
 		} else {
 			result = reportResult
+		}
+
+	case "get_entity_device_info":
+		entityID, _ := args["entity_id"].(string)
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA WebSocket: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			info, err := ws.GetEntityDeviceInfo(entityID)
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				data, _ := json.MarshalIndent(info, "", "  ")
+				result = string(data)
+			}
 		}
 
 	default:
@@ -2176,13 +2218,16 @@ func (s *Server) migrateAutomations() (string, error) {
 func getAutomationGroup(alias string) string {
 	// Define group patterns
 	patterns := map[string][]string{
-		"人来灯亮": {"_有人_开灯", "_有人移动_开灯"},
-		"人走灯灭": {"_无人_关灯", "_无人5分钟_关灯"},
-		"热水器":  {"热水器"},
-		"马桶换气": {"_坐马桶_开换气", "_无人_关换气"},
-		"睡眠模式": {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式"},
-		"光暗灯亮": {"_光暗_开灯"},
-		"衣柜灯":  {"_衣柜开门_开灯", "_衣柜关门_关灯"},
+		"人来灯亮":    {"_有人_开灯", "_有人移动_开灯"},
+		"人走灯灭":    {"_无人_关灯", "_无人5分钟_关灯"},
+		"热水器":     {"热水器"},
+		"马桶换气":    {"_坐马桶_开换气", "_无人_关换气"},
+		"睡眠模式":    {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式"},
+		"光暗灯亮":    {"_光暗_开灯"},
+		"衣柜灯":     {"_衣柜开门_开灯", "_衣柜关门_关灯", "_衣柜超时未关_提醒"},
+		"洗澡模式":    {"_洗澡模式_", "_浴霸", "_进入洗澡模式", "_退出洗澡模式"},
+		"全屋模式":    {"全屋_观影模式_", "全屋_会客模式_", "全屋_开灯模式", "全屋_关灯模式", "全屋_音量调节_"},
+		"iPad自动化": {"_iPad"},
 	}
 
 	for group, suffixes := range patterns {
@@ -2291,9 +2336,13 @@ func (s *Server) generateGroupREADME(groupDir, groupName string) error {
 
 // extractTriggerInfo extracts human-readable trigger information from automation config
 func extractTriggerInfo(config map[string]any) string {
+	// Try both "trigger" and "triggers" keys
 	triggers, ok := config["trigger"].([]any)
 	if !ok || len(triggers) == 0 {
-		return "未知"
+		triggers, ok = config["triggers"].([]any)
+		if !ok || len(triggers) == 0 {
+			return "未知"
+		}
 	}
 
 	var parts []string
@@ -2337,9 +2386,13 @@ func extractTriggerInfo(config map[string]any) string {
 
 // extractActionInfo extracts human-readable action information from automation config
 func extractActionInfo(config map[string]any) string {
+	// Try both "action" and "actions" keys
 	actions, ok := config["action"].([]any)
 	if !ok || len(actions) == 0 {
-		return "未知"
+		actions, ok = config["actions"].([]any)
+		if !ok || len(actions) == 0 {
+			return "未知"
+		}
 	}
 
 	var parts []string
@@ -2349,7 +2402,11 @@ func extractActionInfo(config map[string]any) string {
 			continue
 		}
 
+		// Try both "service" and "action" keys
 		service, _ := action["service"].(string)
+		if service == "" {
+			service, _ = action["action"].(string)
+		}
 		target, _ := action["target"].(map[string]any)
 
 		var entityNames []string

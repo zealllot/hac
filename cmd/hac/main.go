@@ -599,12 +599,16 @@ func cmdSync() {
 // getAutomationGroup determines the group/category for an automation based on its alias
 func getAutomationGroup(alias string) string {
 	patterns := map[string][]string{
-		"人来灯亮": {"_有人_开灯", "_有人移动_开灯"},
-		"人走灯灭": {"_无人_关灯", "_无人5分钟_关灯"},
-		"热水器":  {"热水器"},
-		"马桶换气": {"_坐马桶_开换气", "_无人_关换气"},
-		"睡眠模式": {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式"},
-		"光暗灯亮": {"_光暗_开灯"},
+		"人来灯亮":    {"_有人_开灯", "_有人移动_开灯"},
+		"人走灯灭":    {"_无人_关灯", "_无人5分钟_关灯"},
+		"热水器":     {"热水器"},
+		"马桶换气":    {"_坐马桶_开换气", "_无人_关换气"},
+		"睡眠模式":    {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式"},
+		"光暗灯亮":    {"_光暗_开灯"},
+		"衣柜灯":     {"_衣柜开门_开灯", "_衣柜关门_关灯", "_衣柜超时未关_提醒"},
+		"洗澡模式":    {"_洗澡模式_", "_浴霸", "_进入洗澡模式", "_退出洗澡模式"},
+		"全屋模式":    {"全屋_观影模式_", "全屋_会客模式_", "全屋_开灯模式", "全屋_关灯模式", "全屋_音量调节_"},
+		"iPad自动化": {"_iPad"},
 	}
 
 	for group, suffixes := range patterns {
@@ -700,11 +704,15 @@ func extractTriggerInfo(config map[string]any) string {
 		}
 
 		platform, _ := trigger["platform"].(string)
+		entityID, _ := trigger["entity_id"].(string)
+		to, _ := trigger["to"].(string)
+
 		switch platform {
 		case "state":
-			to, _ := trigger["to"].(string)
+			// Extract entity name for better readability
+			entityName := extractEntityName(entityID)
 			if to == "on" {
-				parts = append(parts, "有人检测到")
+				parts = append(parts, fmt.Sprintf("%s 检测到", entityName))
 			} else if to == "off" {
 				forDuration := ""
 				if forMap, ok := trigger["for"].(map[string]any); ok {
@@ -712,11 +720,32 @@ func extractTriggerInfo(config map[string]any) string {
 						forDuration = fmt.Sprintf(" %d分钟后", mins)
 					}
 				}
-				parts = append(parts, fmt.Sprintf("无人%s", forDuration))
+				parts = append(parts, fmt.Sprintf("%s 无人%s", entityName, forDuration))
+			} else if to == "1.0" || to == "1" {
+				parts = append(parts, fmt.Sprintf("%s 开启", entityName))
+			} else if to == "0.0" || to == "0" {
+				parts = append(parts, fmt.Sprintf("%s 关闭", entityName))
+			} else if to != "" {
+				parts = append(parts, fmt.Sprintf("%s → %s", entityName, to))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s 状态变化", entityName))
 			}
 		case "time":
 			at, _ := trigger["at"].(string)
 			parts = append(parts, fmt.Sprintf("时间 %s", at))
+		case "numeric_state":
+			entityName := extractEntityName(entityID)
+			below, _ := trigger["below"].(string)
+			above, _ := trigger["above"].(string)
+			if below != "" {
+				parts = append(parts, fmt.Sprintf("%s < %s", entityName, below))
+			} else if above != "" {
+				parts = append(parts, fmt.Sprintf("%s > %s", entityName, above))
+			}
+		default:
+			if platform != "" {
+				parts = append(parts, platform)
+			}
 		}
 	}
 
@@ -780,6 +809,44 @@ func extractActionInfo(config map[string]any) string {
 		return "未知"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// extractEntityName extracts a friendly name from entity_id
+func extractEntityName(entityID string) string {
+	parts := strings.SplitN(entityID, ".", 2)
+	if len(parts) != 2 {
+		return entityID
+	}
+
+	domain := parts[0]
+	name := parts[1]
+
+	// Common entity name mappings
+	nameMap := map[string]string{
+		"hui_ke_mo_shi":     "会客模式",
+		"guan_ying_mo_shi":  "观影模式",
+		"quan_wu_yin_liang": "全屋音量",
+		"global_brightness": "全局亮度",
+		"global_color_temp": "全局色温",
+		"shui_mian_mo_shi":  "睡眠模式",
+		"xi_zao_mo_shi":     "洗澡模式",
+	}
+
+	if friendly, ok := nameMap[name]; ok {
+		return friendly
+	}
+
+	// For sensors, try to extract room name
+	if domain == "binary_sensor" {
+		// Remove common suffixes
+		name = strings.TrimSuffix(name, "_occupancy")
+		name = strings.TrimSuffix(name, "_motion")
+		name = strings.TrimSuffix(name, "_presence")
+	}
+
+	// Convert underscores to spaces
+	name = strings.ReplaceAll(name, "_", " ")
+	return name
 }
 
 func printUsage() {
