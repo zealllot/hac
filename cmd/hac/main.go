@@ -752,7 +752,23 @@ func extractTriggerInfo(config map[string]any) string {
 	if len(parts) == 0 {
 		return "未知"
 	}
-	return strings.Join(parts, ", ")
+
+	// Deduplicate and count
+	counts := make(map[string]int)
+	for _, p := range parts {
+		counts[p]++
+	}
+
+	var result []string
+	for p, count := range counts {
+		if count > 1 {
+			result = append(result, fmt.Sprintf("%s×%d", p, count))
+		} else {
+			result = append(result, p)
+		}
+	}
+
+	return strings.Join(result, ", ")
 }
 
 // extractActionInfo extracts human-readable action information
@@ -765,10 +781,40 @@ func extractActionInfo(config map[string]any) string {
 		return "未知"
 	}
 
-	var parts []string
+	// Service to Chinese name mapping
+	serviceNames := map[string]string{
+		"light.turn_on":           "开灯",
+		"light.turn_off":          "关灯",
+		"switch.turn_on":          "开启开关",
+		"switch.turn_off":         "关闭开关",
+		"cover.open_cover":        "打开窗帘",
+		"cover.close_cover":       "关闭窗帘",
+		"automation.turn_on":      "启用自动化",
+		"automation.turn_off":     "禁用自动化",
+		"input_number.set_value":  "设置数值",
+		"input_boolean.turn_on":   "开启",
+		"input_boolean.turn_off":  "关闭",
+		"media_player.volume_set": "设置音量",
+		"media_player.media_stop": "停止播放",
+		"media_player.media_play": "播放",
+		"text.set_value":          "语音播报",
+		"fan.turn_on":             "开启风扇",
+		"fan.turn_off":            "关闭风扇",
+		"climate.turn_on":         "开启空调",
+		"climate.turn_off":        "关闭空调",
+		"scene.turn_on":           "激活场景",
+	}
+
+	// Count actions by type
+	actionCounts := make(map[string]int)
 	for _, a := range actions {
 		action, ok := a.(map[string]any)
 		if !ok {
+			continue
+		}
+
+		// Skip delay actions
+		if _, hasDelay := action["delay"]; hasDelay {
 			continue
 		}
 
@@ -776,32 +822,31 @@ func extractActionInfo(config map[string]any) string {
 		if service == "" {
 			service, _ = action["service"].(string)
 		}
-		target, _ := action["target"].(map[string]any)
-
-		entityCount := 0
-		if target != nil {
-			if _, ok := target["entity_id"].(string); ok {
-				entityCount = 1
-			} else if entityIDs, ok := target["entity_id"].([]any); ok {
-				entityCount = len(entityIDs)
-			}
+		if service == "" {
+			continue
 		}
 
-		switch service {
-		case "light.turn_on":
-			if entityCount > 1 {
-				parts = append(parts, fmt.Sprintf("开灯 (%d个)", entityCount))
-			} else {
-				parts = append(parts, "开灯")
-			}
-		case "light.turn_off":
-			if entityCount > 1 {
-				parts = append(parts, fmt.Sprintf("关灯 (%d个)", entityCount))
-			} else {
-				parts = append(parts, "关灯")
-			}
-		default:
-			parts = append(parts, service)
+		// Get friendly name
+		friendlyName := service
+		if name, ok := serviceNames[service]; ok {
+			friendlyName = name
+		}
+
+		// Skip template expressions
+		if strings.Contains(friendlyName, "{{") {
+			continue
+		}
+
+		actionCounts[friendlyName]++
+	}
+
+	// Build result
+	var parts []string
+	for name, count := range actionCounts {
+		if count > 1 {
+			parts = append(parts, fmt.Sprintf("%s×%d", name, count))
+		} else {
+			parts = append(parts, name)
 		}
 	}
 
@@ -836,17 +881,18 @@ func extractEntityName(entityID string) string {
 		return friendly
 	}
 
-	// For sensors, try to extract room name
+	// For binary sensors (motion/occupancy), just return "人体传感器"
 	if domain == "binary_sensor" {
-		// Remove common suffixes
-		name = strings.TrimSuffix(name, "_occupancy")
-		name = strings.TrimSuffix(name, "_motion")
-		name = strings.TrimSuffix(name, "_presence")
+		return "人体传感器"
 	}
 
-	// Convert underscores to spaces
-	name = strings.ReplaceAll(name, "_", " ")
-	return name
+	// For input_number/input_boolean, extract the name part
+	if domain == "input_number" || domain == "input_boolean" {
+		name = strings.ReplaceAll(name, "_", " ")
+		return name
+	}
+
+	return "传感器"
 }
 
 func printUsage() {
