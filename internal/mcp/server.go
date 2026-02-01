@@ -2216,18 +2216,18 @@ func (s *Server) migrateAutomations() (string, error) {
 
 // getAutomationGroup determines the group/category for an automation based on its alias
 func getAutomationGroup(alias string) string {
-	// Define group patterns
+	// Define group patterns - order matters, more specific patterns first
 	patterns := map[string][]string{
 		"人来灯亮":    {"_有人_开灯", "_有人移动_开灯"},
 		"人走灯灭":    {"_无人_关灯", "_无人5分钟_关灯"},
 		"热水器":     {"热水器"},
 		"马桶换气":    {"_坐马桶_开换气", "_无人_关换气"},
-		"睡眠模式":    {"_睡眠模式_打开", "_睡眠模式_关闭", "_关闭睡眠模式", "_睡眠模式打开", "_关闭窗帘_睡眠模式"},
+		"睡眠模式":    {"睡眠模式"},
 		"光暗灯亮":    {"_光暗_开灯"},
-		"衣柜灯":     {"_衣柜开门_开灯", "_衣柜关门_关灯", "_衣柜超时未关_提醒"},
-		"洗澡模式":    {"_洗澡模式_", "_浴霸", "_进入洗澡模式", "_退出洗澡模式"},
-		"全屋模式":    {"全屋_观影模式_", "全屋_会客模式_", "全屋_开灯模式", "全屋_关灯模式", "全屋_音量调节_", "全屋_乔迁模式_", "全屋_夜间模式_", "全屋_白天模式_"},
-		"iPad自动化": {"_iPad"},
+		"衣柜灯":     {"衣柜开门", "衣柜关门", "衣柜超时"},
+		"洗澡模式":    {"洗澡模式", "浴霸"},
+		"全屋模式":    {"全屋_"},
+		"iPad自动化": {"iPad"},
 	}
 
 	for group, suffixes := range patterns {
@@ -2235,14 +2235,6 @@ func getAutomationGroup(alias string) string {
 			if strings.Contains(alias, suffix) {
 				return group
 			}
-		}
-	}
-
-	// Check for room-based grouping as fallback
-	rooms := []string{"主卧", "主卫", "父母房", "儿童房", "老人房", "北卧", "客厅", "餐厅", "厨房", "洗衣房", "衣帽间", "客卫"}
-	for _, room := range rooms {
-		if strings.HasPrefix(alias, room) {
-			return room
 		}
 	}
 
