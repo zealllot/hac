@@ -815,6 +815,48 @@ automations/
 				Required: []string{"entity_id"},
 			},
 		},
+		{
+			Name: "create_script",
+			Description: `创建一个 Home Assistant 脚本。
+
+脚本可以包含一系列动作，并支持传入参数（fields）。
+创建后可以通过 script.<id> 调用。
+
+示例配置：
+{
+  "id": "toggle_input_number",
+  "alias": "切换 Input Number",
+  "mode": "single",
+  "fields": {
+    "entity_id": {
+      "description": "要切换的 input_number 实体",
+      "required": true,
+      "selector": {"entity": {"domain": "input_number"}}
+    }
+  },
+  "sequence": [
+    {
+      "action": "input_number.set_value",
+      "target": {"entity_id": "{{ entity_id }}"},
+      "data": {"value": "{{ 0 if states(entity_id) | int == 1 else 1 }}"}
+    }
+  ]
+}`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"id": {
+						Type:        "string",
+						Description: "脚本的 ID，将生成 script.<id> 的 entity_id",
+					},
+					"config": {
+						Type:        "string",
+						Description: "脚本配置的 JSON 字符串",
+					},
+				},
+				Required: []string{"id", "config"},
+			},
+		},
 	}
 }
 
@@ -1323,6 +1365,23 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 			} else {
 				data, _ := json.MarshalIndent(info, "", "  ")
 				result = string(data)
+			}
+		}
+
+	case "create_script":
+		scriptID, _ := args["id"].(string)
+		configStr, _ := args["config"].(string)
+
+		var config map[string]any
+		if err := json.Unmarshal([]byte(configStr), &config); err != nil {
+			result = fmt.Sprintf("Error parsing config JSON: %v", err)
+			isError = true
+		} else {
+			if err := s.haClient.CreateScript(scriptID, config); err != nil {
+				result = fmt.Sprintf("Error creating script: %v", err)
+				isError = true
+			} else {
+				result = fmt.Sprintf("✓ 成功创建脚本: script.%s", scriptID)
 			}
 		}
 
@@ -1845,18 +1904,23 @@ func (s *Server) confirmAutomation(filePath string) (string, error) {
 	// Auto-set friendly names for entities used in the automation
 	s.autoSetFriendlyNames(automation)
 
-	// Move from pending to automations/[group]
-	configRepo := os.Getenv("HAC_CONFIG_REPO")
-	if configRepo == "" {
-		return "", fmt.Errorf("HAC_CONFIG_REPO not configured")
-	}
-
-	// Get alias and determine group
+	// Get alias and determine group for HA category assignment
 	alias, _ := automation["alias"].(string)
 	if alias == "" {
 		alias = strings.TrimSuffix(filepath.Base(filePath), ".yaml")
 	}
 	group := getAutomationGroup(alias)
+
+	// Assign to HA category
+	if err := s.assignAutomationToCategory(alias, group); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to assign category: %v\n", err)
+	}
+
+	// Move from pending to automations/[group]
+	configRepo := os.Getenv("HAC_CONFIG_REPO")
+	if configRepo == "" {
+		return "", fmt.Errorf("HAC_CONFIG_REPO not configured")
+	}
 
 	groupDir := filepath.Join(configRepo, "automations", group)
 	if err := os.MkdirAll(groupDir, 0755); err != nil {
@@ -2651,4 +2715,68 @@ func parseFloat(s string) float64 {
 	var f float64
 	fmt.Sscanf(s, "%f", &f)
 	return f
+}
+
+// assignAutomationToCategory assigns an automation to its HA category based on group name
+func (s *Server) assignAutomationToCategory(alias, group string) error {
+	// Skip if group is "其他"
+	if group == "其他" {
+		return nil
+	}
+
+	// Get WebSocket client
+	wsClient, err := s.haClient.NewWSClient()
+	if err != nil {
+		return fmt.Errorf("get ws client: %w", err)
+	}
+	defer wsClient.Close()
+
+	// List existing categories
+	categories, err := wsClient.ListCategories("automation")
+	if err != nil {
+		return fmt.Errorf("list categories: %w", err)
+	}
+
+	// Find category ID by name
+	var categoryID string
+	for _, cat := range categories {
+		if cat.Name == group {
+			categoryID = cat.CategoryID
+			break
+		}
+	}
+
+	// If category doesn't exist, create it
+	if categoryID == "" {
+		newCat, err := wsClient.CreateCategory("automation", group, "")
+		if err != nil {
+			return fmt.Errorf("create category: %w", err)
+		}
+		categoryID = newCat.CategoryID
+	}
+
+	// Find the automation entity_id by alias
+	automations, err := s.haClient.GetAutomations()
+	if err != nil {
+		return fmt.Errorf("get automations: %w", err)
+	}
+
+	var entityID string
+	for _, a := range automations {
+		if friendlyName, ok := a.Attributes["friendly_name"].(string); ok && friendlyName == alias {
+			entityID = a.EntityID
+			break
+		}
+	}
+
+	if entityID == "" {
+		return fmt.Errorf("automation not found: %s", alias)
+	}
+
+	// Assign category
+	if err := wsClient.AssignCategory("automation", entityID, categoryID); err != nil {
+		return fmt.Errorf("assign category: %w", err)
+	}
+
+	return nil
 }

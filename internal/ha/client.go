@@ -728,3 +728,9 @@ func (ws *WSClient) GetEntityDeviceInfo(entityID string) (*EntityRegistryEntry, 
 
 	return nil, fmt.Errorf("entity not found: %s", entityID)
 }
+
+// CreateScript creates a script via the config API
+func (c *Client) CreateScript(id string, config map[string]any) error {
+	_, err := c.doRequest("POST", "/api/config/script/config/"+id, config)
+	return err
+}
