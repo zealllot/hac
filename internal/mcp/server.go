@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1833,12 +1834,19 @@ func (s *Server) syncInputNumberConfig(configRepo string) (string, error) {
 		if strings.HasPrefix(state.EntityID, "input_number.") {
 			// Only sync editable (user-created) input_numbers
 			if editable, ok := state.Attributes["editable"].(bool); ok && editable {
+				// Use current state value as initial if original initial is nil
+				var initial any
+				if state.Attributes["initial"] != nil {
+					initial = state.Attributes["initial"]
+				} else if stateVal, err := strconv.ParseFloat(state.State, 64); err == nil {
+					initial = stateVal
+				}
 				entry := map[string]any{
 					"name":    state.Attributes["friendly_name"],
 					"min":     state.Attributes["min"],
 					"max":     state.Attributes["max"],
 					"step":    state.Attributes["step"],
-					"initial": state.Attributes["initial"],
+					"initial": initial,
 				}
 				if unit, ok := state.Attributes["unit_of_measurement"].(string); ok && unit != "" {
 					entry["unit_of_measurement"] = unit
