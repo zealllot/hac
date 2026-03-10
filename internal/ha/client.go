@@ -545,6 +545,30 @@ func (ws *WSClient) SetEntityName(entityID, name string) error {
 	return err
 }
 
+// CreateInputButton creates an input_button helper
+func (ws *WSClient) CreateInputButton(name, icon string) (string, error) {
+	data := map[string]any{
+		"name": name,
+	}
+	if icon != "" {
+		data["icon"] = icon
+	}
+
+	result, err := ws.sendCommand("input_button/create", data)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract the created entity_id
+	if resultData, ok := result["result"].(map[string]any); ok {
+		if id, ok := resultData["id"].(string); ok {
+			return "input_button." + id, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to get created entity_id")
+}
+
 // CreateInputNumber creates an input_number helper
 func (ws *WSClient) CreateInputNumber(name string, min, max, step, initial float64, unit, icon string) (string, error) {
 	data := map[string]any{

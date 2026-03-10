@@ -701,6 +701,32 @@ entity_id 不变，只改变显示名称。`,
 			},
 		},
 		{
+			Name: "create_input_button",
+			Description: `创建一个 input_button 帮助程序（按钮）。
+
+用于在 HA 界面创建可点击的按钮，可以作为自动化的触发器。
+创建后可以在自动化中通过 state 触发器监听按钮按下事件。
+
+示例触发器：
+trigger:
+  - platform: state
+    entity_id: input_button.xxx`,
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"name": {
+						Type:        "string",
+						Description: "按钮名称，如 \"清扫主卧区\"",
+					},
+					"icon": {
+						Type:        "string",
+						Description: "图标，如 \"mdi:robot-vacuum\"",
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		{
 			Name: "create_input_number",
 			Description: `创建一个 input_number 帮助程序（全局变量）。
 
@@ -1295,6 +1321,25 @@ func (s *Server) callTool(name string, args map[string]any) CallToolResult {
 				isError = true
 			} else {
 				result = fmt.Sprintf("✓ 成功设置显示名称: %s -> %s", entityID, name)
+			}
+		}
+
+	case "create_input_button":
+		name, _ := args["name"].(string)
+		icon, _ := args["icon"].(string)
+
+		ws, err := s.haClient.NewWSClient()
+		if err != nil {
+			result = fmt.Sprintf("Error connecting to HA: %v", err)
+			isError = true
+		} else {
+			defer ws.Close()
+			entityID, err := ws.CreateInputButton(name, icon)
+			if err != nil {
+				result = fmt.Sprintf("Error: %v", err)
+				isError = true
+			} else {
+				result = fmt.Sprintf("✓ 成功创建按钮: %s\n\n可以在自动化中使用以下触发器：\n```yaml\ntrigger:\n  - platform: state\n    entity_id: %s\n```", entityID, entityID)
 			}
 		}
 
@@ -2288,10 +2333,12 @@ func getAutomationGroup(alias string) string {
 		"马桶换气":    {"_坐马桶_开换气", "_无人_关换气"},
 		"睡眠模式":    {"睡眠模式"},
 		"光暗灯亮":    {"_光暗_开灯"},
+		"光亮灯灭":    {"_光亮_关灯"},
 		"衣柜灯":     {"衣柜开门", "衣柜关门", "衣柜超时"},
 		"洗澡模式":    {"洗澡模式", "浴霸"},
 		"全屋模式":    {"全屋_"},
 		"iPad自动化": {"iPad"},
+		"扫地机":     {"扫地机_"},
 	}
 
 	for group, suffixes := range patterns {
