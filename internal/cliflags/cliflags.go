@@ -14,12 +14,26 @@ type Flags struct {
 }
 
 func Parse(subcommand string, args []string) (Flags, []string, error) {
+	return ParseWith(subcommand, args, nil)
+}
+
+// ParseWith is the Parse variant that lets a subcommand register its own flags.
+// `setup` is invoked with the FlagSet before parsing, e.g.:
+//
+//	var sinceStr string
+//	flags, rest, err := cliflags.ParseWith("history", args, func(fs *flag.FlagSet) {
+//	    fs.StringVar(&sinceStr, "since", "24h", "...")
+//	})
+func ParseWith(subcommand string, args []string, setup func(*flag.FlagSet)) (Flags, []string, error) {
 	flagArgs, positionals := splitArgs(args)
 
 	fs := flag.NewFlagSet(subcommand, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	format := fs.String("format", "json", "json or table")
 	timeout := fs.Duration("timeout", 30*time.Second, "HA request timeout")
+	if setup != nil {
+		setup(fs)
+	}
 
 	if err := fs.Parse(flagArgs); err != nil {
 		return Flags{}, nil, err
@@ -27,8 +41,6 @@ func Parse(subcommand string, args []string) (Flags, []string, error) {
 	if *format != "json" && *format != "table" {
 		return Flags{}, nil, fmt.Errorf("invalid --format %q: must be json or table", *format)
 	}
-	// Append any remaining args from fs.Args() (defensive: should be empty since
-	// we pre-stripped positionals, but a leftover would mean an unknown flag-shape).
 	positionals = append(positionals, fs.Args()...)
 	return Flags{Format: *format, Timeout: *timeout}, positionals, nil
 }
