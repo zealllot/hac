@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zealllot/hac/internal/config"
 	"github.com/zealllot/hac/internal/ha"
 	"github.com/zealllot/hac/internal/mcp"
 	"gopkg.in/yaml.v3"
@@ -70,15 +71,12 @@ func main() {
 }
 
 func getClient() *ha.Client {
-	haURL := os.Getenv("HA_URL")
-	haToken := os.Getenv("HA_TOKEN")
-
-	if haURL == "" || haToken == "" {
-		fmt.Fprintln(os.Stderr, "Error: HA_URL and HA_TOKEN environment variables are required")
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-
-	return ha.NewClient(haURL, haToken)
+	return ha.NewClient(cfg.HAURL, cfg.HAToken)
 }
 
 func runCLI(fn func(*ha.Client) error) {
@@ -489,9 +487,9 @@ func cmdDeploy(client *ha.Client, path string) error {
 }
 
 func cmdSync() {
-	cfg, err := loadHacConfig()
+	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error: run 'hac init' first to configure")
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -599,9 +597,9 @@ func cmdSync() {
 }
 
 func cmdSyncConfig() {
-	cfg, err := loadHacConfig()
+	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error: run 'hac init' first to configure")
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
