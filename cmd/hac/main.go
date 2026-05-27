@@ -63,10 +63,10 @@ func main() {
 		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdDevices(c, flags.Format) })
 	case "state":
 		if len(rest) < 1 {
-			fmt.Fprintln(os.Stderr, "Usage: hac state <entity_id>")
+			fmt.Fprintln(os.Stderr, "Usage: hac state <entity_id> [<entity_id> ...]")
 			os.Exit(1)
 		}
-		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdState(c, flags.Format, rest[0]) })
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdState(c, flags.Format, rest) })
 	case "call":
 		if len(rest) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: hac call <domain> <service> <entity_id> [data_json]")
@@ -197,12 +197,46 @@ func cmdDevices(client *ha.Client, format string) error {
 	return render.Devices(os.Stdout, devices, format)
 }
 
-func cmdState(client *ha.Client, format, entityID string) error {
-	state, err := client.GetState(entityID)
+func cmdState(client *ha.Client, format string, args []string) error {
+	// Backward-compatibility: a single literal entity_id keeps the legacy
+	// single-object response shape (no JSON array wrapping).
+	if len(args) == 1 && !strings.ContainsAny(args[0], "*?") {
+		state, err := client.GetState(args[0])
+		if err != nil {
+			return err
+		}
+		return render.State(os.Stdout, state, format)
+	}
+
+	// Multi-entity or wildcard: fetch all states once, then build the result
+	// slice preserving caller order (with "not_found" placeholders).
+	all, err := client.GetStates()
 	if err != nil {
 		return err
 	}
-	return render.State(os.Stdout, state, format)
+	byID := make(map[string]ha.EntityState, len(all))
+	for _, s := range all {
+		byID[s.EntityID] = s
+	}
+
+	var out []ha.EntityState
+	for _, a := range args {
+		if strings.ContainsAny(a, "*?") {
+			for _, s := range all {
+				if matched, _ := filepath.Match(a, s.EntityID); matched {
+					out = append(out, s)
+				}
+			}
+			continue
+		}
+		if s, ok := byID[a]; ok {
+			out = append(out, s)
+		} else {
+			out = append(out, ha.EntityState{EntityID: a, State: "not_found"})
+		}
+	}
+
+	return render.States(os.Stdout, out, format)
 }
 
 func cmdCall(client *ha.Client, domain, service, entityID, dataJSON string) error {
