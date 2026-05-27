@@ -44,6 +44,28 @@ func Load() (*Config, error) {
 	})
 }
 
+// Save writes cfg to ~/.hac.yaml with 0600 permissions.
+func Save(cfg *Config) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("locate home dir: %w", err)
+	}
+	return SaveTo(cfg, home)
+}
+
+// SaveTo writes cfg to <homeDir>/.hac.yaml. Exported for tests that pass a temp dir.
+func SaveTo(cfg *Config, homeDir string) error {
+	data, err := yaml.Marshal(yamlConfig{
+		HAURL:      cfg.HAURL,
+		HAToken:    cfg.HAToken,
+		ConfigRepo: cfg.ConfigRepo,
+	})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(homeDir, ".hac.yaml"), data, 0o600)
+}
+
 func LoadFrom(srcs Sources) (*Config, error) {
 	if u, t := srcs.GetEnv("HA_URL"), srcs.GetEnv("HA_TOKEN"); u != "" && t != "" {
 		return &Config{

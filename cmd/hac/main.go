@@ -11,7 +11,6 @@ import (
 
 	"github.com/zealllot/hac/internal/config"
 	"github.com/zealllot/hac/internal/ha"
-	"github.com/zealllot/hac/internal/mcp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,7 +22,8 @@ func main() {
 
 	switch os.Args[1] {
 	case "mcp":
-		runMCP()
+		fmt.Fprintln(os.Stderr, "Error: 'mcp' has been removed; hac is a CLI-only tool. See docs/adr/0001-cli-only.md")
+		os.Exit(1)
 	case "version":
 		fmt.Println("hac version 0.1.0")
 	case "devices":
@@ -82,16 +82,6 @@ func getClient() *ha.Client {
 func runCLI(fn func(*ha.Client) error) {
 	client := getClient()
 	if err := fn(client); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func runMCP() {
-	client := getClient()
-	server := mcp.NewServer(client)
-
-	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -168,37 +158,6 @@ func cmdAutomations(client *ha.Client) error {
 	return nil
 }
 
-type HacConfig struct {
-	HAURL      string `yaml:"ha_url"`
-	HAToken    string `yaml:"ha_token"`
-	ConfigRepo string `yaml:"config_repo"`
-}
-
-func getHacConfigPath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".hac.yaml")
-}
-
-func loadHacConfig() (*HacConfig, error) {
-	data, err := os.ReadFile(getHacConfigPath())
-	if err != nil {
-		return nil, err
-	}
-	var cfg HacConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-func saveHacConfig(cfg *HacConfig) error {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(getHacConfigPath(), data, 0600)
-}
-
 func cmdInit() {
 	reader := bufio.NewReader(os.Stdin)
 
@@ -218,13 +177,13 @@ func cmdInit() {
 	// Test connection
 	fmt.Print("Testing connection... ")
 	client := ha.NewClient(haURL, haToken)
-	config, err := client.GetConfig()
+	haCfg, err := client.GetConfig()
 	if err != nil {
 		fmt.Println("✗")
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("✓ Connected to %s (HA %s)\n", config.LocationName, config.Version)
+	fmt.Printf("✓ Connected to %s (HA %s)\n", haCfg.LocationName, haCfg.Version)
 
 	// Ask for config repo path
 	fmt.Print("Config repo path (e.g., ~/ha-config): ")
@@ -238,77 +197,16 @@ func cmdInit() {
 		configRepo, _ = filepath.Abs(configRepo)
 	}
 
-	// Save hac config
-	hacCfg := &HacConfig{
+	if err := config.Save(&config.Config{
 		HAURL:      haURL,
 		HAToken:    haToken,
 		ConfigRepo: configRepo,
-	}
-	if err := saveHacConfig(hacCfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving hac config: %v\n", err)
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("✓ Saved config to %s\n", getHacConfigPath())
-
-	// Get hac binary path
-	exePath, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting executable path: %v\n", err)
-		os.Exit(1)
-	}
-	exePath, _ = filepath.Abs(exePath)
-
-	// Prepare MCP config
 	homeDir, _ := os.UserHomeDir()
-	configDir := filepath.Join(homeDir, ".codeium", "windsurf")
-	configPath := filepath.Join(configDir, "mcp_config.json")
-
-	// Create directory if not exists
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Read existing config or create new
-	var mcpConfig map[string]any
-	if data, err := os.ReadFile(configPath); err == nil {
-		json.Unmarshal(data, &mcpConfig)
-	}
-	if mcpConfig == nil {
-		mcpConfig = make(map[string]any)
-	}
-
-	// Get or create mcpServers
-	servers, ok := mcpConfig["mcpServers"].(map[string]any)
-	if !ok {
-		servers = make(map[string]any)
-	}
-
-	// Add hac server with config repo env
-	envVars := map[string]string{
-		"HA_URL":   haURL,
-		"HA_TOKEN": haToken,
-	}
-	if configRepo != "" {
-		envVars["HAC_CONFIG_REPO"] = configRepo
-	}
-
-	servers["hac"] = map[string]any{
-		"command": exePath,
-		"args":    []string{"mcp"},
-		"env":     envVars,
-	}
-	mcpConfig["mcpServers"] = servers
-
-	// Write config
-	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
-	if err := os.WriteFile(configPath, data, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing config: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("✓ MCP config written to %s\n", configPath)
-	fmt.Println("\n⚠️  Please restart Windsurf to apply changes.")
+	fmt.Printf("✓ Saved config to %s\n", filepath.Join(homeDir, ".hac.yaml"))
 }
 
 func cmdExport(client *ha.Client, outputDir string) error {
