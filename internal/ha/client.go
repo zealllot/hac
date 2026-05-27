@@ -30,6 +30,12 @@ func NewClient(baseURL, token string) *Client {
 	}
 }
 
+// SetTimeout overrides the HTTP request timeout (default 30s).
+// Use this when the caller provides --timeout via the CLI.
+func (c *Client) SetTimeout(d time.Duration) {
+	c.httpClient.Timeout = d
+}
+
 func (c *Client) doRequest(method, path string, body any) ([]byte, error) {
 	var reqBody io.Reader
 	if body != nil {
