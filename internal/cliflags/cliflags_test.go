@@ -1,12 +1,32 @@
 package cliflags_test
 
 import (
+	"flag"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/zealllot/hac/internal/cliflags"
 )
+
+func TestParseWith_subcommandSpecificFlag(t *testing.T) {
+	var createCategory bool
+	_, rest, err := cliflags.ParseWith("deploy",
+		[]string{"automations/x/y.yaml", "--create-category"},
+		func(fs *flag.FlagSet) {
+			fs.BoolVar(&createCategory, "create-category", false, "")
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !createCategory {
+		t.Errorf("createCategory not set by --create-category flag")
+	}
+	if len(rest) != 1 || rest[0] != "automations/x/y.yaml" {
+		t.Errorf("rest = %v, want [automations/x/y.yaml]", rest)
+	}
+}
 
 func TestParse_invalidFormatErrors(t *testing.T) {
 	_, _, err := cliflags.Parse("state", []string{"--format=xml", "light.x"})

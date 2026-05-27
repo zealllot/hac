@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zealllot/hac/internal/category"
 	"github.com/zealllot/hac/internal/cliflags"
 	"github.com/zealllot/hac/internal/config"
 	"github.com/zealllot/hac/internal/ha"
@@ -38,6 +40,10 @@ func main() {
 	}
 	if sub == "init" {
 		cmdInit()
+		return
+	}
+	if sub == "deploy" {
+		runDeploy(os.Args[2:])
 		return
 	}
 	if sub == "history" {
@@ -78,12 +84,6 @@ func main() {
 			os.Exit(1)
 		}
 		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdExport(c, rest[0]) })
-	case "deploy":
-		if len(rest) < 1 {
-			fmt.Fprintln(os.Stderr, "Usage: hac deploy <file_or_dir>")
-			os.Exit(1)
-		}
-		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdDeploy(c, rest[0]) })
 	case "sync":
 		cmdSync(flags.Timeout)
 	case "sync-config":
@@ -111,6 +111,24 @@ func runCLI(timeout time.Duration, fn func(*ha.Client) error) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runDeploy(args []string) {
+	var createCategory bool
+	flags, rest, err := cliflags.ParseWith("deploy", args, func(fs *flag.FlagSet) {
+		fs.BoolVar(&createCategory, "create-category", false, "auto-create missing HA category from directory name")
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: hac deploy [--create-category] <file_or_dir>")
+		os.Exit(1)
+	}
+	runCLI(flags.Timeout, func(c *ha.Client) error {
+		return cmdDeploy(c, rest[0], createCategory)
+	})
 }
 
 func runHistory(args []string) {
@@ -316,7 +334,7 @@ func cmdExport(client *ha.Client, outputDir string) error {
 	return nil
 }
 
-func cmdDeploy(client *ha.Client, path string) error {
+func cmdDeploy(client *ha.Client, path string, autoCreate bool) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat path: %w", err)
@@ -337,98 +355,96 @@ func cmdDeploy(client *ha.Client, path string) error {
 		files = []string{path}
 	}
 
-	// Connect WebSocket for category operations
 	ws, err := client.NewWSClient()
 	if err != nil {
 		return fmt.Errorf("connect WebSocket: %w", err)
 	}
 	defer ws.Close()
 
-	// Get or create categories
-	categories, err := ws.ListCategories("automation")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to list categories: %v\n", err)
-	}
-
-	categoryMap := make(map[string]string) // group name -> category ID
-	for _, cat := range categories {
-		categoryMap[cat.Name] = cat.CategoryID
-	}
-
-	// Ensure required categories exist
-	requiredGroups := []string{"人来灯亮", "人走灯灭", "热水器", "马桶换气", "睡眠模式", "光暗灯亮"}
-	groupIcons := map[string]string{
-		"人来灯亮": "mdi:lightbulb-on",
-		"人走灯灭": "mdi:lightbulb-off",
-		"热水器":  "mdi:water-boiler",
-		"马桶换气": "mdi:toilet",
-		"睡眠模式": "mdi:sleep",
-		"光暗灯亮": "mdi:weather-sunset-down",
-	}
-	for _, group := range requiredGroups {
-		if _, exists := categoryMap[group]; !exists {
-			icon := groupIcons[group]
-			cat, err := ws.CreateCategory("automation", group, icon)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to create category %s: %v\n", group, err)
-			} else {
-				categoryMap[group] = cat.CategoryID
-				fmt.Printf("✓ Created category: %s\n", group)
-			}
-		}
-	}
-
-	deployed := 0
+	deployed, failed := 0, 0
 	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to read %s: %v\n", file, err)
+		if err := deployOne(client, ws, file, autoCreate); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %s: %v\n", file, err)
+			failed++
 			continue
 		}
-
-		var automation map[string]any
-		if err := yaml.Unmarshal(data, &automation); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to parse %s: %v\n", file, err)
-			continue
-		}
-
-		if err := client.CreateAutomation(automation); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to deploy %s: %v\n", file, err)
-			continue
-		}
-
-		alias := filepath.Base(file)
-		if a, ok := automation["alias"].(string); ok {
-			alias = a
-		}
-
-		// Assign category based on alias
-		group := getAutomationGroup(alias)
-		if categoryID, exists := categoryMap[group]; exists {
-			// Get entity_id from automation id
-			id, _ := automation["id"].(string)
-			if id != "" {
-				entityID := "automation." + strings.ReplaceAll(strings.ToLower(alias), " ", "_")
-				// Try to find the actual entity_id
-				automations, _ := client.GetAutomations()
-				for _, a := range automations {
-					if aid, ok := a.Attributes["id"].(string); ok && aid == id {
-						entityID = a.EntityID
-						break
-					}
-				}
-				if err := ws.AssignCategory("automation", entityID, categoryID); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to assign category for %s: %v\n", alias, err)
-				}
-			}
-		}
-
-		fmt.Printf("✓ Deployed %s\n", alias)
 		deployed++
 	}
 
-	fmt.Printf("\nDeployed %d automations\n", deployed)
+	fmt.Printf("\nDeployed %d, failed %d\n", deployed, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d of %d file(s) failed to deploy", failed, deployed+failed)
+	}
 	return nil
+}
+
+// deployOne handles a single YAML file end-to-end. Pre-flight category check
+// happens BEFORE the HA push, so a missing category never leaves the
+// automation in a half-deployed state on HA.
+func deployOne(client *ha.Client, ws *ha.WSClient, file string, autoCreate bool) error {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	var automation map[string]any
+	if err := yaml.Unmarshal(data, &automation); err != nil {
+		return fmt.Errorf("parse YAML: %w", err)
+	}
+
+	// Path-based category (single source of truth; see ADR-0003).
+	cat := category.Resolve(file)
+	var categoryID string
+	if cat != "" {
+		categoryID, err = category.EnsureExists(ws, cat, autoCreate)
+		if err != nil {
+			// NotFoundError is the user-facing case we want surfaced verbatim.
+			var nfErr *category.NotFoundError
+			if errors.As(err, &nfErr) {
+				return err
+			}
+			return fmt.Errorf("category preflight: %w", err)
+		}
+	}
+
+	if err := client.CreateAutomation(automation); err != nil {
+		return fmt.Errorf("push HA: %w", err)
+	}
+
+	alias, _ := automation["alias"].(string)
+	if alias == "" {
+		alias = filepath.Base(file)
+	}
+
+	if categoryID != "" {
+		id, _ := automation["id"].(string)
+		if id != "" {
+			entityID := findEntityIDByAutomationID(client, id, alias)
+			if err := category.Assign(ws, entityID, categoryID); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to assign category for %s: %v\n", alias, err)
+			}
+		}
+	}
+
+	fmt.Printf("✓ Deployed %s\n", alias)
+	return nil
+}
+
+// findEntityIDByAutomationID looks up the HA-assigned entity_id (which may
+// be auto-numbered when a new automation is pushed) by matching the `id`
+// field in the YAML against HA's automation registry.
+// Falls back to a guess derived from the alias if no match is found.
+func findEntityIDByAutomationID(client *ha.Client, automationID, alias string) string {
+	guess := "automation." + strings.ReplaceAll(strings.ToLower(alias), " ", "_")
+	automations, err := client.GetAutomations()
+	if err != nil {
+		return guess
+	}
+	for _, a := range automations {
+		if aid, ok := a.Attributes["id"].(string); ok && aid == automationID {
+			return a.EntityID
+		}
+	}
+	return guess
 }
 
 func cmdSync(timeout time.Duration) {

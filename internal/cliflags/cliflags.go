@@ -20,9 +20,16 @@ func Parse(subcommand string, args []string) (Flags, []string, error) {
 // ParseWith is the Parse variant that lets a subcommand register its own flags.
 // `setup` is invoked with the FlagSet before parsing, e.g.:
 //
+//	var createCategory bool
+//	flags, rest, err := cliflags.ParseWith("deploy", args, func(fs *flag.FlagSet) {
+//	    fs.BoolVar(&createCategory, "create-category", false, "auto-create missing HA category")
+//	})
+//
+// Or for history:
+//
 //	var sinceStr string
 //	flags, rest, err := cliflags.ParseWith("history", args, func(fs *flag.FlagSet) {
-//	    fs.StringVar(&sinceStr, "since", "24h", "...")
+//	    fs.StringVar(&sinceStr, "since", "24h", "duration or ISO-8601 timestamp")
 //	})
 func ParseWith(subcommand string, args []string, setup func(*flag.FlagSet)) (Flags, []string, error) {
 	flagArgs, positionals := splitArgs(args)
