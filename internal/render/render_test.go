@@ -109,6 +109,24 @@ func TestState_json(t *testing.T) {
 	}
 }
 
+func TestStates_jsonArray(t *testing.T) {
+	states := []ha.EntityState{
+		{EntityID: "light.a", State: "on"},
+		{EntityID: "light.b", State: "not_found"},
+	}
+	var buf bytes.Buffer
+	if err := render.States(&buf, states, "json"); err != nil {
+		t.Fatalf("States: %v", err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output not JSON array: %v\n%s", err, buf.String())
+	}
+	if len(got) != 2 || got[1]["state"] != "not_found" {
+		t.Errorf("wrong JSON: %+v", got)
+	}
+}
+
 func TestState_table(t *testing.T) {
 	s := &ha.EntityState{
 		EntityID:   "light.x",
