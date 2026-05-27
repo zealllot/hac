@@ -649,13 +649,14 @@ type DeviceRegistryEntry struct {
 
 // EntityRegistryEntry represents an entity in the entity registry
 type EntityRegistryEntry struct {
-	EntityID     string `json:"entity_id"`
-	UniqueID     string `json:"unique_id,omitempty"`
-	Platform     string `json:"platform,omitempty"`
-	DeviceID     string `json:"device_id,omitempty"`
-	AreaID       string `json:"area_id,omitempty"`
-	Name         string `json:"name,omitempty"`
-	OriginalName string `json:"original_name,omitempty"`
+	EntityID     string            `json:"entity_id"`
+	UniqueID     string            `json:"unique_id,omitempty"`
+	Platform     string            `json:"platform,omitempty"`
+	DeviceID     string            `json:"device_id,omitempty"`
+	AreaID       string            `json:"area_id,omitempty"`
+	Name         string            `json:"name,omitempty"`
+	OriginalName string            `json:"original_name,omitempty"`
+	Categories   map[string]string `json:"categories,omitempty"` // scope → categoryID, e.g. {"automation": "uuid-..."}
 }
 
 // GetDeviceRegistry gets all devices from the device registry
@@ -735,6 +736,14 @@ func (ws *WSClient) GetEntityRegistry() ([]EntityRegistryEntry, error) {
 			}
 			if originalName, ok := em["original_name"].(string); ok {
 				ent.OriginalName = originalName
+			}
+			if cats, ok := em["categories"].(map[string]any); ok {
+				ent.Categories = make(map[string]string, len(cats))
+				for scope, id := range cats {
+					if idStr, ok := id.(string); ok {
+						ent.Categories[scope] = idStr
+					}
+				}
 			}
 			entities = append(entities, ent)
 		}

@@ -74,6 +74,36 @@ func State(w io.Writer, s *ha.EntityState, format string) error {
 	}
 }
 
+// States renders a list of entity states as a JSON array or a stacked
+// key-value table. Used by `hac state` when multiple entities or a wildcard
+// are passed.
+func States(w io.Writer, states []ha.EntityState, format string) error {
+	switch format {
+	case "json":
+		return writeJSON(w, states)
+	case "table":
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		for i, s := range states {
+			if i > 0 {
+				fmt.Fprintln(tw, "---")
+			}
+			fmt.Fprintf(tw, "entity_id\t%s\n", s.EntityID)
+			fmt.Fprintf(tw, "state\t%s\n", s.State)
+			keys := make([]string, 0, len(s.Attributes))
+			for k := range s.Attributes {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Fprintf(tw, "%s\t%v\n", k, s.Attributes[k])
+			}
+		}
+		return tw.Flush()
+	default:
+		return fmt.Errorf("unknown format %q", format)
+	}
+}
+
 // DeployResult is the per-file outcome emitted by `hac deploy`.
 type DeployResult struct {
 	File         string `json:"file"`
