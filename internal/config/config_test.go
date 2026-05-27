@@ -3,11 +3,48 @@ package config_test
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/zealllot/hac/internal/config"
 )
+
+func TestSaveRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	want := &config.Config{
+		HAURL:      "http://ha.example:8123",
+		HAToken:    "tok-abc",
+		ConfigRepo: "/some/repo",
+	}
+
+	if err := config.SaveTo(want, dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// File created at the right path with 0600.
+	path := filepath.Join(dir, ".hac.yaml")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("expected file at %s: %v", path, err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("perm = %o, want 0600", info.Mode().Perm())
+	}
+
+	// Round-trip: Load via LoadFrom using the same dir as HomeDir.
+	got, err := config.LoadFrom(config.Sources{
+		GetEnv:   func(string) string { return "" },
+		HomeDir:  dir,
+		ReadFile: os.ReadFile,
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if *got != *want {
+		t.Errorf("round-trip: got %+v, want %+v", got, want)
+	}
+}
 
 const (
 	homeDir      = "/home/x"
