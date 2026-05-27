@@ -19,6 +19,7 @@ import (
 	"github.com/zealllot/hac/internal/ha"
 	"github.com/zealllot/hac/internal/logbook"
 	"github.com/zealllot/hac/internal/render"
+	"github.com/zealllot/hac/internal/search"
 	"github.com/zealllot/hac/internal/syncer"
 	"github.com/zealllot/hac/internal/timefmt"
 	"gopkg.in/yaml.v3"
@@ -79,6 +80,18 @@ func main() {
 		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdCall(c, rest[0], rest[1], rest[2], data) })
 	case "automations":
 		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdAutomations(c, flags.Format) })
+	case "search":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: hac search <keyword>")
+			os.Exit(1)
+		}
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdSearch(c, flags.Format, rest[0]) })
+	case "area":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: hac area <area_name>")
+			os.Exit(1)
+		}
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdArea(c, flags.Format, rest[0]) })
 	case "export":
 		if len(rest) < 1 {
 			fmt.Fprintln(os.Stderr, "Usage: hac export <output_dir>")
@@ -260,6 +273,22 @@ func cmdCall(client *ha.Client, domain, service, entityID, dataJSON string) erro
 
 	fmt.Printf("✓ Called %s.%s on %s\n", domain, service, entityID)
 	return nil
+}
+
+func cmdSearch(client *ha.Client, format, query string) error {
+	devs, err := client.GetDevices()
+	if err != nil {
+		return err
+	}
+	return render.Matches(os.Stdout, search.Run(devs, query), format)
+}
+
+func cmdArea(client *ha.Client, format, areaName string) error {
+	devs, err := client.GetDevices()
+	if err != nil {
+		return err
+	}
+	return render.Matches(os.Stdout, search.ByArea(devs, areaName), format)
 }
 
 func cmdAutomations(client *ha.Client, format string) error {

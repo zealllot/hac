@@ -10,6 +10,7 @@ import (
 
 	"github.com/zealllot/hac/internal/ha"
 	"github.com/zealllot/hac/internal/logbook"
+	"github.com/zealllot/hac/internal/search"
 )
 
 // Devices writes a device list as JSON (default) or aligned table.
@@ -153,6 +154,24 @@ func Logbook(w io.Writer, events []logbook.Event, format string) error {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 				e.When.In(time.Local).Format("2006-01-02 15:04:05"),
 				e.State, e.EntityID, e.Name, by)
+		}
+		return tw.Flush()
+	default:
+		return fmt.Errorf("unknown format %q", format)
+	}
+}
+
+// Matches writes search/area results as JSON array or aligned 4-column table.
+func Matches(w io.Writer, matches []search.Match, format string) error {
+	sort.Slice(matches, func(i, j int) bool { return matches[i].EntityID < matches[j].EntityID })
+	switch format {
+	case "json":
+		return writeJSON(w, matches)
+	case "table":
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "entity_id\tstate\tarea\tfriendly_name")
+		for _, m := range matches {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.EntityID, m.State, m.Area, m.FriendlyName)
 		}
 		return tw.Flush()
 	default:
