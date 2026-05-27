@@ -73,6 +73,39 @@ func State(w io.Writer, s *ha.EntityState, format string) error {
 	}
 }
 
+// DeployResult is the per-file outcome emitted by `hac deploy`.
+type DeployResult struct {
+	File         string `json:"file"`
+	Alias        string `json:"alias,omitempty"`
+	Category     string `json:"category,omitempty"`
+	AutomationID string `json:"automation_id,omitempty"`
+	EntityID     string `json:"entity_id,omitempty"`
+	GitAdded     bool   `json:"git_added"`
+	GitCommitted bool   `json:"git_committed"`
+	Error        string `json:"error,omitempty"`
+}
+
+// Deploy writes the per-file deploy results as a JSON array or aligned table.
+func Deploy(w io.Writer, results []DeployResult, format string) error {
+	switch format {
+	case "json":
+		return writeJSON(w, results)
+	case "table":
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "file\talias\tcategory\tgit_added\tgit_committed\tstatus")
+		for _, r := range results {
+			status := "OK"
+			if r.Error != "" {
+				status = r.Error
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%v\t%v\t%s\n", r.File, r.Alias, r.Category, r.GitAdded, r.GitCommitted, status)
+		}
+		return tw.Flush()
+	default:
+		return fmt.Errorf("unknown format %q", format)
+	}
+}
+
 // Logbook writes a logbook event list as JSON or aligned table.
 // Table format formats `When` in time.Local for human readability.
 func Logbook(w io.Writer, events []logbook.Event, format string) error {
