@@ -6,8 +6,10 @@ import (
 	"io"
 	"sort"
 	"text/tabwriter"
+	"time"
 
 	"github.com/zealllot/hac/internal/ha"
+	"github.com/zealllot/hac/internal/logbook"
 )
 
 // Devices writes a device list as JSON (default) or aligned table.
@@ -64,6 +66,30 @@ func State(w io.Writer, s *ha.EntityState, format string) error {
 		sort.Strings(keys)
 		for _, k := range keys {
 			fmt.Fprintf(tw, "%s\t%v\n", k, s.Attributes[k])
+		}
+		return tw.Flush()
+	default:
+		return fmt.Errorf("unknown format %q", format)
+	}
+}
+
+// Logbook writes a logbook event list as JSON or aligned table.
+// Table format formats `When` in time.Local for human readability.
+func Logbook(w io.Writer, events []logbook.Event, format string) error {
+	switch format {
+	case "json":
+		return writeJSON(w, events)
+	case "table":
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "when\tstate\tentity_id\tname\tby")
+		for _, e := range events {
+			by := e.ContextName
+			if by == "" {
+				by = "—"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+				e.When.In(time.Local).Format("2006-01-02 15:04:05"),
+				e.State, e.EntityID, e.Name, by)
 		}
 		return tw.Flush()
 	default:

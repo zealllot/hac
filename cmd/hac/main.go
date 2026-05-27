@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +17,9 @@ import (
 	"github.com/zealllot/hac/internal/cliflags"
 	"github.com/zealllot/hac/internal/config"
 	"github.com/zealllot/hac/internal/ha"
+	"github.com/zealllot/hac/internal/logbook"
 	"github.com/zealllot/hac/internal/render"
+	"github.com/zealllot/hac/internal/timefmt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,6 +44,10 @@ func main() {
 	}
 	if sub == "deploy" {
 		runDeploy(os.Args[2:])
+		return
+	}
+	if sub == "history" {
+		runHistory(os.Args[2:])
 		return
 	}
 
@@ -122,6 +129,51 @@ func runDeploy(args []string) {
 	runCLI(flags.Timeout, func(c *ha.Client) error {
 		return cmdDeploy(c, rest[0], createCategory)
 	})
+}
+
+func runHistory(args []string) {
+	var sinceStr, untilStr string
+	flags, rest, err := cliflags.ParseWith("history", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sinceStr, "since", "24h", "duration (24h, 2h30m) or ISO-8601 timestamp")
+		fs.StringVar(&untilStr, "until", "now", "duration or ISO-8601 timestamp; default now")
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: hac history [--since 24h] [--until now] <entity_id>")
+		os.Exit(1)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	now := time.Now()
+	start, err := timefmt.Parse(sinceStr, now)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: --since: %v\n", err)
+		os.Exit(1)
+	}
+	end, err := timefmt.Parse(untilStr, now)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: --until: %v\n", err)
+		os.Exit(1)
+	}
+
+	httpClient := &http.Client{Timeout: flags.Timeout}
+	events, err := logbook.Query(httpClient, cfg.HAURL, cfg.HAToken, rest, start, end)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := render.Logbook(os.Stdout, events, flags.Format); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdDevices(client *ha.Client, format string) error {

@@ -5,10 +5,57 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zealllot/hac/internal/ha"
+	"github.com/zealllot/hac/internal/logbook"
 	"github.com/zealllot/hac/internal/render"
 )
+
+func TestLogbook_json(t *testing.T) {
+	events := []logbook.Event{
+		{
+			When:        time.Date(2026, 5, 26, 13, 39, 3, 0, time.UTC),
+			State:       "off",
+			EntityID:    "light.x",
+			Name:        "灯 X",
+			ContextName: "客厅_无人_关灯",
+		},
+	}
+	var buf bytes.Buffer
+	if err := render.Logbook(&buf, events, "json"); err != nil {
+		t.Fatalf("Logbook: %v", err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output not JSON array: %v\n%s", err, buf.String())
+	}
+	if len(got) != 1 || got[0]["state"] != "off" || got[0]["entity_id"] != "light.x" {
+		t.Errorf("wrong JSON: %+v", got)
+	}
+}
+
+func TestLogbook_table(t *testing.T) {
+	events := []logbook.Event{
+		{
+			When:        time.Date(2026, 5, 26, 13, 39, 3, 0, time.UTC),
+			State:       "off",
+			EntityID:    "light.x",
+			Name:        "灯 X",
+			ContextName: "客厅_无人_关灯",
+		},
+	}
+	var buf bytes.Buffer
+	if err := render.Logbook(&buf, events, "table"); err != nil {
+		t.Fatalf("Logbook: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"light.x", "off", "灯 X", "客厅_无人_关灯", "when"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table missing %q\nactual:\n%s", want, out)
+		}
+	}
+}
 
 func sampleDevices() map[string]ha.DeviceCapability {
 	return map[string]ha.DeviceCapability{
