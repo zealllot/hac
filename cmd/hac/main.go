@@ -8,9 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/zealllot/hac/internal/cliflags"
 	"github.com/zealllot/hac/internal/config"
 	"github.com/zealllot/hac/internal/ha"
+	"github.com/zealllot/hac/internal/render"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,102 +23,102 @@ func main() {
 		os.Exit(1)
 	}
 
-	switch os.Args[1] {
-	case "mcp":
+	sub := os.Args[1]
+	if sub == "mcp" {
 		fmt.Fprintln(os.Stderr, "Error: 'mcp' has been removed; hac is a CLI-only tool. See docs/adr/0001-cli-only.md")
 		os.Exit(1)
-	case "version":
+	}
+	if sub == "version" {
 		fmt.Println("hac version 0.1.0")
+		return
+	}
+	if sub == "init" {
+		cmdInit()
+		return
+	}
+
+	flags, rest, err := cliflags.Parse(sub, os.Args[2:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch sub {
 	case "devices":
-		runCLI(cmdDevices)
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdDevices(c, flags.Format) })
 	case "state":
-		if len(os.Args) < 3 {
+		if len(rest) < 1 {
 			fmt.Fprintln(os.Stderr, "Usage: hac state <entity_id>")
 			os.Exit(1)
 		}
-		runCLI(func(c *ha.Client) error { return cmdState(c, os.Args[2]) })
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdState(c, flags.Format, rest[0]) })
 	case "call":
-		if len(os.Args) < 5 {
+		if len(rest) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: hac call <domain> <service> <entity_id> [data_json]")
 			os.Exit(1)
 		}
 		var data string
-		if len(os.Args) > 5 {
-			data = os.Args[5]
+		if len(rest) > 3 {
+			data = rest[3]
 		}
-		runCLI(func(c *ha.Client) error { return cmdCall(c, os.Args[2], os.Args[3], os.Args[4], data) })
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdCall(c, rest[0], rest[1], rest[2], data) })
 	case "automations":
-		runCLI(cmdAutomations)
-	case "init":
-		cmdInit()
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdAutomations(c, flags.Format) })
 	case "export":
-		if len(os.Args) < 3 {
+		if len(rest) < 1 {
 			fmt.Fprintln(os.Stderr, "Usage: hac export <output_dir>")
 			os.Exit(1)
 		}
-		runCLI(func(c *ha.Client) error { return cmdExport(c, os.Args[2]) })
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdExport(c, rest[0]) })
 	case "deploy":
-		if len(os.Args) < 3 {
+		if len(rest) < 1 {
 			fmt.Fprintln(os.Stderr, "Usage: hac deploy <file_or_dir>")
 			os.Exit(1)
 		}
-		runCLI(func(c *ha.Client) error { return cmdDeploy(c, os.Args[2]) })
+		runCLI(flags.Timeout, func(c *ha.Client) error { return cmdDeploy(c, rest[0]) })
 	case "sync":
-		cmdSync()
+		cmdSync(flags.Timeout)
 	case "sync-config":
-		cmdSyncConfig()
+		cmdSyncConfig(flags.Timeout)
 	default:
 		printUsage()
 		os.Exit(1)
 	}
 }
 
-func getClient() *ha.Client {
+func getClient(timeout time.Duration) *ha.Client {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	return ha.NewClient(cfg.HAURL, cfg.HAToken)
+	c := ha.NewClient(cfg.HAURL, cfg.HAToken)
+	c.SetTimeout(timeout)
+	return c
 }
 
-func runCLI(fn func(*ha.Client) error) {
-	client := getClient()
+func runCLI(timeout time.Duration, fn func(*ha.Client) error) {
+	client := getClient(timeout)
 	if err := fn(client); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func cmdDevices(client *ha.Client) error {
+func cmdDevices(client *ha.Client, format string) error {
 	devices, err := client.GetDevices()
 	if err != nil {
 		return err
 	}
-
-	for entityID, dev := range devices {
-		state := dev.State
-		if state == "" {
-			state = "-"
-		}
-		name := dev.Name
-		if name == "" {
-			name = entityID
-		}
-		fmt.Printf("%-40s %-20s %s\n", entityID, state, name)
-	}
-	return nil
+	return render.Devices(os.Stdout, devices, format)
 }
 
-func cmdState(client *ha.Client, entityID string) error {
+func cmdState(client *ha.Client, format, entityID string) error {
 	state, err := client.GetState(entityID)
 	if err != nil {
 		return err
 	}
-
-	data, _ := json.MarshalIndent(state, "", "  ")
-	fmt.Println(string(data))
-	return nil
+	return render.State(os.Stdout, state, format)
 }
 
 func cmdCall(client *ha.Client, domain, service, entityID, dataJSON string) error {
@@ -141,21 +144,12 @@ func cmdCall(client *ha.Client, domain, service, entityID, dataJSON string) erro
 	return nil
 }
 
-func cmdAutomations(client *ha.Client) error {
+func cmdAutomations(client *ha.Client, format string) error {
 	automations, err := client.GetAutomations()
 	if err != nil {
 		return err
 	}
-
-	for _, a := range automations {
-		name := ""
-		if n, ok := a.Attributes["friendly_name"].(string); ok {
-			name = n
-		}
-		id := strings.TrimPrefix(a.EntityID, "automation.")
-		fmt.Printf("%-30s %-10s %s\n", id, a.State, name)
-	}
-	return nil
+	return render.Automations(os.Stdout, automations, format)
 }
 
 func cmdInit() {
@@ -384,7 +378,7 @@ func cmdDeploy(client *ha.Client, path string) error {
 	return nil
 }
 
-func cmdSync() {
+func cmdSync(timeout time.Duration) {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -397,6 +391,7 @@ func cmdSync() {
 	}
 
 	client := ha.NewClient(cfg.HAURL, cfg.HAToken)
+	client.SetTimeout(timeout)
 
 	automationsDir := filepath.Join(cfg.ConfigRepo, "automations")
 	if err := os.MkdirAll(automationsDir, 0755); err != nil {
@@ -494,7 +489,7 @@ func cmdSync() {
 	fmt.Println("✓ Committed changes to git")
 }
 
-func cmdSyncConfig() {
+func cmdSyncConfig(timeout time.Duration) {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -502,6 +497,7 @@ func cmdSyncConfig() {
 	}
 
 	client := ha.NewClient(cfg.HAURL, cfg.HAToken)
+	client.SetTimeout(timeout)
 	states, err := client.GetStates()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting states: %v\n", err)
