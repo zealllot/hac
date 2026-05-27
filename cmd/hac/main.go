@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/zealllot/hac/internal/category"
 	"github.com/zealllot/hac/internal/cliflags"
 	"github.com/zealllot/hac/internal/config"
+	"github.com/zealllot/hac/internal/gitops"
 	"github.com/zealllot/hac/internal/ha"
 	"github.com/zealllot/hac/internal/render"
 	"gopkg.in/yaml.v3"
@@ -108,20 +108,32 @@ func runCLI(timeout time.Duration, fn func(*ha.Client) error) {
 
 func runDeploy(args []string) {
 	var createCategory bool
+	var commitMsg string
 	flags, rest, err := cliflags.ParseWith("deploy", args, func(fs *flag.FlagSet) {
 		fs.BoolVar(&createCategory, "create-category", false, "auto-create missing HA category from directory name")
+		fs.StringVar(&commitMsg, "commit", "", "after staging, also git-commit with the given message")
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	if len(rest) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: hac deploy [--create-category] <file_or_dir>")
+		fmt.Fprintln(os.Stderr, `Usage: hac deploy [--create-category] [--commit "<msg>"] <file_or_dir>`)
 		os.Exit(1)
 	}
 	runCLI(flags.Timeout, func(c *ha.Client) error {
-		return cmdDeploy(c, rest[0], createCategory)
+		return cmdDeploy(c, rest[0], deployOpts{
+			AutoCreateCategory: createCategory,
+			CommitMessage:      commitMsg,
+			Format:             flags.Format,
+		})
 	})
+}
+
+type deployOpts struct {
+	AutoCreateCategory bool
+	CommitMessage      string
+	Format             string
 }
 
 func cmdDevices(client *ha.Client, format string) error {
@@ -282,7 +294,7 @@ func cmdExport(client *ha.Client, outputDir string) error {
 	return nil
 }
 
-func cmdDeploy(client *ha.Client, path string, autoCreate bool) error {
+func cmdDeploy(client *ha.Client, path string, opts deployOpts) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat path: %w", err)
@@ -309,72 +321,95 @@ func cmdDeploy(client *ha.Client, path string, autoCreate bool) error {
 	}
 	defer ws.Close()
 
-	deployed, failed := 0, 0
+	results := make([]render.DeployResult, 0, len(files))
+	failed := 0
 	for _, file := range files {
-		if err := deployOne(client, ws, file, autoCreate); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %s: %v\n", file, err)
+		r := deployOne(client, ws, file, opts)
+		results = append(results, r)
+		if r.Error != "" {
 			failed++
-			continue
 		}
-		deployed++
 	}
 
-	fmt.Printf("\nDeployed %d, failed %d\n", deployed, failed)
+	if rerr := render.Deploy(os.Stdout, results, opts.Format); rerr != nil {
+		fmt.Fprintf(os.Stderr, "render: %v\n", rerr)
+	}
+
 	if failed > 0 {
-		return fmt.Errorf("%d of %d file(s) failed to deploy", failed, deployed+failed)
+		return fmt.Errorf("%d of %d file(s) failed", failed, len(files))
 	}
 	return nil
 }
 
 // deployOne handles a single YAML file end-to-end. Pre-flight category check
 // happens BEFORE the HA push, so a missing category never leaves the
-// automation in a half-deployed state on HA.
-func deployOne(client *ha.Client, ws *ha.WSClient, file string, autoCreate bool) error {
+// automation in a half-deployed state on HA. Git staging happens AFTER push +
+// assign so a failed deploy doesn't pollute the working tree.
+func deployOne(client *ha.Client, ws *ha.WSClient, file string, opts deployOpts) render.DeployResult {
+	r := render.DeployResult{File: file}
+
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return fmt.Errorf("read: %w", err)
+		r.Error = fmt.Sprintf("read: %v", err)
+		return r
 	}
 	var automation map[string]any
 	if err := yaml.Unmarshal(data, &automation); err != nil {
-		return fmt.Errorf("parse YAML: %w", err)
+		r.Error = fmt.Sprintf("parse YAML: %v", err)
+		return r
 	}
 
 	// Path-based category (single source of truth; see ADR-0003).
 	cat := category.Resolve(file)
+	r.Category = cat
 	var categoryID string
 	if cat != "" {
-		categoryID, err = category.EnsureExists(ws, cat, autoCreate)
+		categoryID, err = category.EnsureExists(ws, cat, opts.AutoCreateCategory)
 		if err != nil {
-			// NotFoundError is the user-facing case we want surfaced verbatim.
-			var nfErr *category.NotFoundError
-			if errors.As(err, &nfErr) {
-				return err
-			}
-			return fmt.Errorf("category preflight: %w", err)
+			r.Error = err.Error()
+			return r
 		}
 	}
 
 	if err := client.CreateAutomation(automation); err != nil {
-		return fmt.Errorf("push HA: %w", err)
+		r.Error = fmt.Sprintf("push HA: %v", err)
+		return r
 	}
 
 	alias, _ := automation["alias"].(string)
 	if alias == "" {
 		alias = filepath.Base(file)
 	}
+	r.Alias = alias
+	if id, ok := automation["id"].(string); ok {
+		r.AutomationID = id
+	}
 
-	if categoryID != "" {
-		id, _ := automation["id"].(string)
-		if id != "" {
-			entityID := findEntityIDByAutomationID(client, id, alias)
-			if err := category.Assign(ws, entityID, categoryID); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to assign category for %s: %v\n", alias, err)
-			}
+	if categoryID != "" && r.AutomationID != "" {
+		entityID := findEntityIDByAutomationID(client, r.AutomationID, alias)
+		r.EntityID = entityID
+		if err := category.Assign(ws, entityID, categoryID); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to assign category for %s: %v\n", alias, err)
 		}
 	}
 
-	fmt.Printf("✓ Deployed %s\n", alias)
-	return nil
+	// Git staging — non-fatal: HA is already updated, so just warn on failure.
+	if err := gitops.Add(file); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: HA updated but git add failed for %s: %v\n", file, err)
+	} else {
+		r.GitAdded = true
+	}
+
+	// Commit only if --commit was passed.
+	if opts.CommitMessage != "" && r.GitAdded {
+		if err := gitops.Commit(filepath.Dir(file), opts.CommitMessage); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: git commit failed: %v\n", err)
+		} else {
+			r.GitCommitted = true
+		}
+	}
+
+	return r
 }
 
 // findEntityIDByAutomationID looks up the HA-assigned entity_id (which may

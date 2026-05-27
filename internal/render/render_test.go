@@ -80,6 +80,53 @@ func TestState_table(t *testing.T) {
 	}
 }
 
+func TestDeploy_json(t *testing.T) {
+	results := []render.DeployResult{
+		{
+			File: "automations/光亮灯灭/x.yaml", Alias: "客厅 光亮 关灯", Category: "光亮灯灭",
+			AutomationID: "123", EntityID: "automation.ke_ting_guang_liang_guan_deng",
+			GitAdded: true, GitCommitted: false,
+		},
+		{
+			File: "automations/未知/y.yaml", Error: "category \"未知\" not found",
+		},
+	}
+	var buf bytes.Buffer
+	if err := render.Deploy(&buf, results, "json"); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output not JSON array: %v\n%s", err, buf.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if got[0]["git_added"] != true || got[0]["git_committed"] != false {
+		t.Errorf("first row missing git_added/committed: %+v", got[0])
+	}
+	if got[1]["error"] == nil {
+		t.Errorf("second row missing error: %+v", got[1])
+	}
+}
+
+func TestDeploy_table(t *testing.T) {
+	results := []render.DeployResult{
+		{File: "x.yaml", Alias: "foo", GitAdded: true, GitCommitted: true},
+		{File: "y.yaml", Error: "boom"},
+	}
+	var buf bytes.Buffer
+	if err := render.Deploy(&buf, results, "table"); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"x.yaml", "y.yaml", "foo", "boom"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table missing %q\nactual:\n%s", want, out)
+		}
+	}
+}
+
 func TestAutomations_table(t *testing.T) {
 	autos := []ha.EntityState{
 		{EntityID: "automation.客厅_有人_开灯", State: "on", Attributes: map[string]any{"friendly_name": "客厅 有人 开灯"}},
