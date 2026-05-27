@@ -61,6 +61,8 @@ func main() {
 		runCLI(func(c *ha.Client) error { return cmdDeploy(c, os.Args[2]) })
 	case "sync":
 		cmdSync()
+	case "sync-config":
+		cmdSyncConfig()
 	default:
 		printUsage()
 		os.Exit(1)
@@ -582,6 +584,102 @@ func cmdSync() {
 	}
 
 	cmd = exec.Command("git", "commit", "-m", "Sync automations from Home Assistant")
+	cmd.Dir = cfg.ConfigRepo
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(output), "nothing to commit") {
+			fmt.Println("✓ No changes to commit")
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: git commit failed: %v\n", err)
+		}
+		return
+	}
+
+	fmt.Println("✓ Committed changes to git")
+}
+
+func cmdSyncConfig() {
+	cfg, err := loadHacConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error: run 'hac init' first to configure")
+		os.Exit(1)
+	}
+
+	client := ha.NewClient(cfg.HAURL, cfg.HAToken)
+	states, err := client.GetStates()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting states: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Filter input_number entities
+	configMap := make(map[string]any)
+	count := 0
+	for _, state := range states {
+		if strings.HasPrefix(state.EntityID, "input_number.") {
+			if editable, ok := state.Attributes["editable"].(bool); ok && editable {
+				// Use current state value as initial if original initial is nil
+				var initial any
+				if state.Attributes["initial"] != nil {
+					initial = state.Attributes["initial"]
+				} else if stateVal := state.State; stateVal != "" && stateVal != "unknown" && stateVal != "unavailable" {
+					// Parse state value as float
+					var val float64
+					if _, err := fmt.Sscanf(stateVal, "%f", &val); err == nil {
+						initial = val
+					}
+				}
+
+				entry := map[string]any{
+					"name":    state.Attributes["friendly_name"],
+					"min":     state.Attributes["min"],
+					"max":     state.Attributes["max"],
+					"step":    state.Attributes["step"],
+					"initial": initial,
+				}
+				if unit, ok := state.Attributes["unit_of_measurement"].(string); ok && unit != "" {
+					entry["unit_of_measurement"] = unit
+				}
+				if icon, ok := state.Attributes["icon"].(string); ok && icon != "" {
+					entry["icon"] = icon
+				}
+				key := strings.TrimPrefix(state.EntityID, "input_number.")
+				configMap[key] = entry
+				count++
+			}
+		}
+	}
+
+	if count == 0 {
+		fmt.Println("No editable input_number entities found")
+		return
+	}
+
+	// Write to input_number.yaml
+	filePath := filepath.Join(cfg.ConfigRepo, "input_number.yaml")
+	data, err := yaml.Marshal(configMap)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling yaml: %v\n", err)
+		os.Exit(1)
+	}
+
+	header := "# 全局变量配置 - 由 hac sync-config 自动生成\n\n"
+	if err := os.WriteFile(filePath, []byte(header+string(data)), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✓ Synced %d input_number entities to %s\n", count, filePath)
+
+	// Git add and commit
+	cmd := exec.Command("git", "add", filePath)
+	cmd.Dir = cfg.ConfigRepo
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: git add failed: %v\n", err)
+		return
+	}
+
+	cmd = exec.Command("git", "commit", "-m", fmt.Sprintf("Sync input_number config (%d items)", count))
 	cmd.Dir = cfg.ConfigRepo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
