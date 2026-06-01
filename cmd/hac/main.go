@@ -531,16 +531,26 @@ func deployOne(client *ha.Client, ws *ha.WSClient, file string, opts deployOpts)
 // findEntityIDByAutomationID looks up the HA-assigned entity_id (which may
 // be auto-numbered when a new automation is pushed) by matching the `id`
 // field in the YAML against HA's automation registry.
-// Falls back to a guess derived from the alias if no match is found.
+//
+// Right after CreateAutomation, HA needs a moment before the new automation
+// shows up in /api/states with its `id` attribute, so we retry a few times
+// before giving up. The alias-derived guess is only a last resort: it is
+// wrong whenever HA transliterates a non-ASCII alias (e.g. Chinese → pinyin),
+// which would make category assignment fail with an invalid entity_id.
 func findEntityIDByAutomationID(client *ha.Client, automationID, alias string) string {
 	guess := "automation." + strings.ReplaceAll(strings.ToLower(alias), " ", "_")
-	automations, err := client.GetAutomations()
-	if err != nil {
-		return guess
-	}
-	for _, a := range automations {
-		if aid, ok := a.Attributes["id"].(string); ok && aid == automationID {
-			return a.EntityID
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		automations, err := client.GetAutomations()
+		if err != nil {
+			continue
+		}
+		for _, a := range automations {
+			if aid, ok := a.Attributes["id"].(string); ok && aid == automationID {
+				return a.EntityID
+			}
 		}
 	}
 	return guess
