@@ -52,6 +52,10 @@ func main() {
 		runHistory(os.Args[2:])
 		return
 	}
+	if sub == "helper" {
+		runHelper(os.Args[2:])
+		return
+	}
 
 	flags, rest, err := cliflags.Parse(sub, os.Args[2:])
 	if err != nil {
@@ -155,6 +159,69 @@ type deployOpts struct {
 	AutoCreateCategory bool
 	CommitMessage      string
 	Format             string
+}
+
+func runHelper(args []string) {
+	const usage = `Usage: hac helper create input_boolean <object_id> [--name "<name>"] [--icon "mdi:..."]`
+	if len(args) < 1 || args[0] != "create" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
+	}
+
+	var name, icon string
+	flags, rest, err := cliflags.ParseWith("helper", args[1:], func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "name", "", "display name (defaults to object_id)")
+		fs.StringVar(&icon, "icon", "", "mdi icon, e.g. mdi:gesture-tap")
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(rest) < 2 {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
+	}
+
+	htype, objectID := rest[0], rest[1]
+	if htype != "input_boolean" {
+		fmt.Fprintf(os.Stderr, "Error: helper type %q not supported (only input_boolean)\n", htype)
+		os.Exit(1)
+	}
+	entityID := htype + "." + objectID
+	if name == "" {
+		name = objectID
+	}
+
+	client := getClient(flags.Timeout)
+
+	// Idempotent: skip if the entity already exists, so batch re-runs are safe.
+	if _, err := client.GetState(entityID); err == nil {
+		fmt.Printf("%s already exists, skipping\n", entityID)
+		return
+	}
+
+	ws, err := client.NewWSClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer ws.Close()
+
+	// HA slugifies the (possibly Chinese) name into an unpredictable object_id,
+	// so create first then rename to the requested entity_id.
+	created, err := ws.CreateInputBoolean(name, icon)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: create %s: %v\n", entityID, err)
+		os.Exit(1)
+	}
+	if created != entityID {
+		if err := ws.RenameEntityID(created, entityID); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: created %s but failed to rename to %s: %v\n", created, entityID, err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("created %s (name=%q)\n", entityID, name)
 }
 
 func runHistory(args []string) {
@@ -728,6 +795,7 @@ Usage:
   hac export <output_dir>                    Export automations to YAML files
   hac deploy <file_or_dir>                   Deploy YAML automations to HA
   hac sync                                   Sync HA automations to config repo and commit
+  hac helper create input_boolean <id>       Create an input_boolean helper (--name, --icon)
   hac version                                Show version
 
 Examples:
@@ -741,6 +809,7 @@ Examples:
   hac deploy ./automations/living_room.yaml
   hac deploy ./automations/
   hac sync
+  hac helper create input_boolean zhu_wei_shou_dong --name "主卫手动"
 
 Environment variables:
   HA_URL        Home Assistant URL (e.g., http://192.168.1.100:8123)

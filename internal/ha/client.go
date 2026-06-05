@@ -575,6 +575,32 @@ func (ws *WSClient) CreateInputButton(name, icon string) (string, error) {
 	return "", fmt.Errorf("failed to get created entity_id")
 }
 
+// CreateInputBoolean creates an input_boolean helper and returns its entity_id.
+// HA derives the object_id by slugifying name (non-ASCII names yield an
+// unpredictable id), so callers that need a specific object_id should rename
+// the returned entity_id afterwards via RenameEntityID.
+func (ws *WSClient) CreateInputBoolean(name, icon string) (string, error) {
+	data := map[string]any{
+		"name": name,
+	}
+	if icon != "" {
+		data["icon"] = icon
+	}
+
+	result, err := ws.sendCommand("input_boolean/create", data)
+	if err != nil {
+		return "", err
+	}
+
+	if resultData, ok := result["result"].(map[string]any); ok {
+		if id, ok := resultData["id"].(string); ok {
+			return "input_boolean." + id, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to get created entity_id")
+}
+
 // CreateInputNumber creates an input_number helper
 func (ws *WSClient) CreateInputNumber(name string, min, max, step, initial float64, unit, icon string) (string, error) {
 	data := map[string]any{
