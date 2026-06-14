@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zealllot/hac/internal/autofmt"
 	"github.com/zealllot/hac/internal/ha"
 	"gopkg.in/yaml.v3"
 )
@@ -109,7 +110,7 @@ func (s *Syncer) Sync() (Report, error) {
 			targetPath = filepath.Join(automationsDir, slug(alias)+".yaml")
 		}
 
-		data, err := yaml.Marshal(config)
+		data, err := autofmt.FormatAutomation(config)
 		if err != nil {
 			continue
 		}
