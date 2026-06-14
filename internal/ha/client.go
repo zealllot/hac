@@ -551,6 +551,27 @@ func (ws *WSClient) SetEntityName(entityID, name string) error {
 	return err
 }
 
+// DeleteConfigEntry removes a config entry (used to delete config-flow helpers
+// such as template sensors). Config-entry removal is REST-only — there is no
+// equivalent WebSocket command.
+func (c *Client) DeleteConfigEntry(entryID string) error {
+	_, err := c.doRequest("DELETE", "/api/config/config_entries/entry/"+entryID, nil)
+	if err != nil {
+		return fmt.Errorf("delete config entry %s: %w", entryID, err)
+	}
+	return nil
+}
+
+// DeleteCollectionHelper removes a storage-collection helper (input_boolean,
+// input_number, ...) via its `<domain>/delete` command. objectID is the part of
+// the entity_id after the dot.
+func (ws *WSClient) DeleteCollectionHelper(domain, objectID string) error {
+	_, err := ws.sendCommand(domain+"/delete", map[string]any{
+		domain + "_id": objectID,
+	})
+	return err
+}
+
 // CreateInputButton creates an input_button helper
 func (ws *WSClient) CreateInputButton(name, icon string) (string, error) {
 	data := map[string]any{
@@ -632,34 +653,107 @@ func (ws *WSClient) CreateInputNumber(name string, min, max, step, initial float
 	return "", fmt.Errorf("failed to get created entity_id")
 }
 
-// CreateTemplateSensor creates a persistent template sensor via WebSocket API (UI Helper)
-func (ws *WSClient) CreateTemplateSensor(name, stateTemplate, unit, deviceClass, icon string) (string, error) {
-	// Use template/item/create for UI-based template helpers
-	data := map[string]any{
-		"template_type": "sensor",
-		"name":          name,
-		"state":         stateTemplate,
+// CreateTemplateSensor creates a persistent template sensor (a UI "Template" helper)
+// by driving its multi-step config flow over the REST API, and returns the id of
+// the config entry that was created.
+//
+// The template helper is a config-entry helper (unlike input_boolean, which is a
+// storage collection), so there is no single `*/create` WebSocket command — the
+// flow is: start (handler="template") → pick the "sensor" menu option → submit the
+// sensor form. Resolve the resulting entity_id afterwards via
+// ResolveEntityByConfigEntry, since the flow result returns the entry id, not the
+// entity_id (which HA derives by slugifying the name).
+func (c *Client) CreateTemplateSensor(name, stateTemplate, unit, deviceClass, icon string) (string, error) {
+	// Step 1: start the flow. The template integration first shows a menu of
+	// template types (sensor, binary_sensor, ...).
+	start, err := c.startConfigFlow("template")
+	if err != nil {
+		return "", fmt.Errorf("start template flow: %w", err)
 	}
-	if unit != "" {
-		data["unit_of_measurement"] = unit
-	}
-	if deviceClass != "" {
-		data["device_class"] = deviceClass
+	flowID, _ := start["flow_id"].(string)
+	if flowID == "" {
+		return "", fmt.Errorf("template flow returned no flow_id: %v", start)
 	}
 
-	result, err := ws.sendCommand("template/item/create", data)
+	// Step 2: choose the "sensor" menu option.
+	menu, err := c.configFlowStep(flowID, map[string]any{"next_step_id": "sensor"})
+	if err != nil {
+		return "", fmt.Errorf("select sensor step: %w", err)
+	}
+	if ft, _ := menu["type"].(string); ft != "form" {
+		return "", fmt.Errorf("expected sensor form, got %v: %v", menu["type"], menu)
+	}
+
+	// Step 3: submit the sensor form.
+	form := map[string]any{
+		"name":  name,
+		"state": stateTemplate,
+	}
+	if unit != "" {
+		form["unit_of_measurement"] = unit
+	}
+	if deviceClass != "" {
+		form["device_class"] = deviceClass
+	}
+	done, err := c.configFlowStep(flowID, form)
+	if err != nil {
+		return "", fmt.Errorf("submit sensor form: %w", err)
+	}
+	if ft, _ := done["type"].(string); ft != "create_entry" {
+		// Surface validation errors from the form (e.g. invalid template).
+		return "", fmt.Errorf("template flow did not create entry (type=%v): %v", done["type"], done)
+	}
+
+	if result, ok := done["result"].(map[string]any); ok {
+		if entryID, ok := result["entry_id"].(string); ok {
+			return entryID, nil
+		}
+	}
+	return "", fmt.Errorf("template flow created entry but returned no entry_id: %v", done)
+}
+
+// startConfigFlow begins a config-entries flow for the given integration handler.
+func (c *Client) startConfigFlow(handler string) (map[string]any, error) {
+	data, err := c.doRequest("POST", "/api/config/config_entries/flow", map[string]any{
+		"handler":               handler,
+		"show_advanced_options": false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal flow start (body=%q): %w", string(data), err)
+	}
+	return result, nil
+}
+
+// configFlowStep submits one step of an in-progress config flow.
+func (c *Client) configFlowStep(flowID string, payload map[string]any) (map[string]any, error) {
+	data, err := c.doRequest("POST", "/api/config/config_entries/flow/"+flowID, payload)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal flow step (body=%q): %w", string(data), err)
+	}
+	return result, nil
+}
+
+// ResolveEntityByConfigEntry returns the entity_id of the (single) entity owned by
+// the given config entry. Used to find the entity created by a config-flow helper.
+func (ws *WSClient) ResolveEntityByConfigEntry(configEntryID string) (string, error) {
+	entities, err := ws.GetEntityRegistry()
 	if err != nil {
 		return "", err
 	}
-
-	// Extract the created entity_id
-	if resultData, ok := result["result"].(map[string]any); ok {
-		if id, ok := resultData["id"].(string); ok {
-			return "sensor.template_" + id, nil
+	for _, e := range entities {
+		if e.ConfigEntryID == configEntryID {
+			return e.EntityID, nil
 		}
 	}
-
-	return "", fmt.Errorf("failed to get created entity_id from result: %v", result)
+	return "", fmt.Errorf("no entity found for config entry %s", configEntryID)
 }
 
 // DeviceRegistryEntry represents a device in the device registry
@@ -678,11 +772,12 @@ type EntityRegistryEntry struct {
 	EntityID     string            `json:"entity_id"`
 	UniqueID     string            `json:"unique_id,omitempty"`
 	Platform     string            `json:"platform,omitempty"`
-	DeviceID     string            `json:"device_id,omitempty"`
-	AreaID       string            `json:"area_id,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	OriginalName string            `json:"original_name,omitempty"`
-	Categories   map[string]string `json:"categories,omitempty"` // scope → categoryID, e.g. {"automation": "uuid-..."}
+	DeviceID      string            `json:"device_id,omitempty"`
+	AreaID        string            `json:"area_id,omitempty"`
+	Name          string            `json:"name,omitempty"`
+	OriginalName  string            `json:"original_name,omitempty"`
+	ConfigEntryID string            `json:"config_entry_id,omitempty"` // the config entry that owns this entity (config-flow helpers)
+	Categories    map[string]string `json:"categories,omitempty"`      // scope → categoryID, e.g. {"automation": "uuid-..."}
 }
 
 // GetDeviceRegistry gets all devices from the device registry
@@ -762,6 +857,9 @@ func (ws *WSClient) GetEntityRegistry() ([]EntityRegistryEntry, error) {
 			}
 			if originalName, ok := em["original_name"].(string); ok {
 				ent.OriginalName = originalName
+			}
+			if configEntryID, ok := em["config_entry_id"].(string); ok {
+				ent.ConfigEntryID = configEntryID
 			}
 			if cats, ok := em["categories"].(map[string]any); ok {
 				ent.Categories = make(map[string]string, len(cats))

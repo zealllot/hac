@@ -162,16 +162,30 @@ type deployOpts struct {
 }
 
 func runHelper(args []string) {
-	const usage = `Usage: hac helper create input_boolean <object_id> [--name "<name>"] [--icon "mdi:..."]`
-	if len(args) < 1 || args[0] != "create" {
+	const usage = `Usage:
+  hac helper create input_boolean <object_id> [--name "<name>"] [--icon "mdi:..."]
+  hac helper create template_sensor <object_id> --state "<jinja template>" [--name "<name>"] [--unit "<unit>"] [--device-class "<class>"] [--icon "mdi:..."]
+  hac helper delete <entity_id>`
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
+	}
+	if args[0] == "delete" {
+		runHelperDelete(args[1:])
+		return
+	}
+	if args[0] != "create" {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
 
-	var name, icon string
+	var name, icon, state, unit, deviceClass string
 	flags, rest, err := cliflags.ParseWith("helper", args[1:], func(fs *flag.FlagSet) {
 		fs.StringVar(&name, "name", "", "display name (defaults to object_id)")
 		fs.StringVar(&icon, "icon", "", "mdi icon, e.g. mdi:gesture-tap")
+		fs.StringVar(&state, "state", "", "state template (template_sensor only)")
+		fs.StringVar(&unit, "unit", "", "unit of measurement (template_sensor only)")
+		fs.StringVar(&deviceClass, "device-class", "", "device class (template_sensor only)")
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -183,11 +197,21 @@ func runHelper(args []string) {
 	}
 
 	htype, objectID := rest[0], rest[1]
-	if htype != "input_boolean" {
-		fmt.Fprintf(os.Stderr, "Error: helper type %q not supported (only input_boolean)\n", htype)
+	if htype != "input_boolean" && htype != "template_sensor" {
+		fmt.Fprintf(os.Stderr, "Error: helper type %q not supported (input_boolean, template_sensor)\n", htype)
 		os.Exit(1)
 	}
-	entityID := htype + "." + objectID
+
+	// template_sensor lands in the sensor.* domain; input_boolean keeps its own.
+	domain := htype
+	if htype == "template_sensor" {
+		domain = "sensor"
+		if state == "" {
+			fmt.Fprintln(os.Stderr, "Error: template_sensor requires --state \"<jinja template>\"")
+			os.Exit(1)
+		}
+	}
+	entityID := domain + "." + objectID
 	if name == "" {
 		name = objectID
 	}
@@ -209,7 +233,19 @@ func runHelper(args []string) {
 
 	// HA slugifies the (possibly Chinese) name into an unpredictable object_id,
 	// so create first then rename to the requested entity_id.
-	created, err := ws.CreateInputBoolean(name, icon)
+	var created string
+	switch htype {
+	case "input_boolean":
+		created, err = ws.CreateInputBoolean(name, icon)
+	case "template_sensor":
+		// The template helper is a config-entry helper: create via its config flow
+		// (returns the entry id), then resolve the entity_id it spawned.
+		var entryID string
+		entryID, err = client.CreateTemplateSensor(name, state, unit, deviceClass, icon)
+		if err == nil {
+			created, err = ws.ResolveEntityByConfigEntry(entryID)
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: create %s: %v\n", entityID, err)
 		os.Exit(1)
@@ -222,6 +258,67 @@ func runHelper(args []string) {
 	}
 
 	fmt.Printf("created %s (name=%q)\n", entityID, name)
+}
+
+func runHelperDelete(args []string) {
+	flags, rest, err := cliflags.ParseWith("helper", args, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: hac helper delete <entity_id>")
+		os.Exit(1)
+	}
+	entityID := rest[0]
+	domain, objectID, found := strings.Cut(entityID, ".")
+	if !found {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a valid entity_id\n", entityID)
+		os.Exit(1)
+	}
+
+	client := getClient(flags.Timeout)
+
+	// Idempotent: nothing to do if it is already gone.
+	if _, err := client.GetState(entityID); err != nil {
+		fmt.Printf("%s does not exist, skipping\n", entityID)
+		return
+	}
+
+	ws, err := client.NewWSClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer ws.Close()
+
+	// Config-flow helpers (e.g. template sensors) are owned by a config entry and
+	// must be removed by deleting that entry; storage-collection helpers
+	// (input_boolean, ...) are deleted via their own <domain>/delete command.
+	entities, err := ws.GetEntityRegistry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	var entryID string
+	for _, e := range entities {
+		if e.EntityID == entityID {
+			entryID = e.ConfigEntryID
+			break
+		}
+	}
+
+	if entryID != "" {
+		err = client.DeleteConfigEntry(entryID)
+	} else {
+		err = ws.DeleteCollectionHelper(domain, objectID)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: delete %s: %v\n", entityID, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("deleted %s\n", entityID)
 }
 
 func runHistory(args []string) {
@@ -796,6 +893,8 @@ Usage:
   hac deploy <file_or_dir>                   Deploy YAML automations to HA
   hac sync                                   Sync HA automations to config repo and commit
   hac helper create input_boolean <id>       Create an input_boolean helper (--name, --icon)
+  hac helper create template_sensor <id>     Create a template sensor helper (--state, --unit, --device-class, --name, --icon)
+  hac helper delete <entity_id>              Delete a helper (input_boolean / template sensor)
   hac version                                Show version
 
 Examples:
@@ -810,6 +909,7 @@ Examples:
   hac deploy ./automations/
   hac sync
   hac helper create input_boolean zhu_wei_shou_dong --name "主卫手动"
+  hac helper create template_sensor mijia_li_xian_shu --state "{{ 1 }}" --name "米家掉线数"
 
 Environment variables:
   HA_URL        Home Assistant URL (e.g., http://192.168.1.100:8123)
