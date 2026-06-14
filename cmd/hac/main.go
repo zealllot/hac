@@ -871,118 +871,29 @@ func cmdSync(timeout time.Duration) {
 }
 
 func cmdSyncConfig(timeout time.Duration) {
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	client := ha.NewClient(cfg.HAURL, cfg.HAToken)
-	client.SetTimeout(timeout)
-	states, err := client.GetStates()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting states: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Filter input_number entities
-	configMap := make(map[string]any)
-	count := 0
-	for _, state := range states {
-		if strings.HasPrefix(state.EntityID, "input_number.") {
-			if editable, ok := state.Attributes["editable"].(bool); ok && editable {
-				// Use current state value as initial if original initial is nil
-				var initial any
-				if state.Attributes["initial"] != nil {
-					initial = state.Attributes["initial"]
-				} else if stateVal := state.State; stateVal != "" && stateVal != "unknown" && stateVal != "unavailable" {
-					// Parse state value as float
-					var val float64
-					if _, err := fmt.Sscanf(stateVal, "%f", &val); err == nil {
-						initial = val
-					}
-				}
-
-				entry := map[string]any{
-					"name":    state.Attributes["friendly_name"],
-					"min":     state.Attributes["min"],
-					"max":     state.Attributes["max"],
-					"step":    state.Attributes["step"],
-					"initial": initial,
-				}
-				if unit, ok := state.Attributes["unit_of_measurement"].(string); ok && unit != "" {
-					entry["unit_of_measurement"] = unit
-				}
-				if icon, ok := state.Attributes["icon"].(string); ok && icon != "" {
-					entry["icon"] = icon
-				}
-				key := strings.TrimPrefix(state.EntityID, "input_number.")
-				configMap[key] = entry
-				count++
-			}
-		}
-	}
-
-	if count == 0 {
-		fmt.Println("No editable input_number entities found")
-		return
-	}
-
-	// Write to input_number.yaml
-	filePath := filepath.Join(cfg.ConfigRepo, "input_number.yaml")
-	data, err := yaml.Marshal(configMap)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marshaling yaml: %v\n", err)
-		os.Exit(1)
-	}
-
-	header := "# 全局变量配置 - 由 hac sync-config 自动生成\n\n"
-	if err := os.WriteFile(filePath, []byte(header+string(data)), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("✓ Synced %d input_number entities to %s\n", count, filePath)
-
-	// Git add and commit
-	cmd := exec.Command("git", "add", filePath)
-	cmd.Dir = cfg.ConfigRepo
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: git add failed: %v\n", err)
-		return
-	}
-
-	cmd = exec.Command("git", "commit", "-m", fmt.Sprintf("Sync input_number config (%d items)", count))
-	cmd.Dir = cfg.ConfigRepo
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if strings.Contains(string(output), "nothing to commit") {
-			fmt.Println("✓ No changes to commit")
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: git commit failed: %v\n", err)
-		}
-		return
-	}
-
-	fmt.Println("✓ Committed changes to git")
+	_ = timeout
+	fmt.Fprintln(os.Stderr,
+		"hac sync-config 已弃用:请改用 `hac sync`(现已包含全部 UI helper,写入 helpers/)。")
+	os.Exit(2)
 }
 
 func printUsage() {
-	fmt.Println(`hac - Home Assistant CLI & MCP Server
+	fmt.Println(`hac - Home Assistant CLI
 
 Usage:
-  hac init                                   Configure Windsurf MCP integration
-  hac mcp                                    Start MCP server (for Windsurf)
+  hac init                                   Initialize hac (HA URL, token, config repo)
   hac devices                                List all devices
   hac state <entity_id>                      Get device state
   hac call <domain> <service> <entity_id> [data]   Call a service
   hac automations                            List all automations
   hac export <output_dir>                    Export automations to YAML files
   hac deploy <file_or_dir>                   Deploy YAML automations to HA
-  hac sync                                   Sync HA automations to config repo and commit
+  hac sync                                   Sync HA automations + UI helpers to config repo (writes helpers/)
   hac helper create input_boolean <id>       Create an input_boolean helper (--name, --icon)
   hac helper create template_sensor <id>     Create a template sensor helper (--state, --unit, --device-class, --name, --icon)
   hac helper delete <entity_id>              Delete a helper (input_boolean / template sensor)
+  hac helper apply [dir]                     Apply helpers/ manifest to HA (idempotent)
+  hac sync-config                            (已弃用,用 hac sync)
   hac version                                Show version
 
 Examples:
@@ -998,6 +909,7 @@ Examples:
   hac sync
   hac helper create input_boolean zhu_wei_shou_dong --name "主卫手动"
   hac helper create template_sensor mijia_li_xian_shu --state "{{ 1 }}" --name "米家掉线数"
+  hac helper apply
 
 Environment variables:
   HA_URL        Home Assistant URL (e.g., http://192.168.1.100:8123)
