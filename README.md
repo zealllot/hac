@@ -57,10 +57,14 @@ hac call <domain> <service> <entity_id> [data] # call a service
 hac automations                                # list automations
 hac export <output_dir>                        # export all automations to YAML
 hac deploy <file_or_dir>                       # deploy YAML automation(s) to HA
-hac sync                                       # pull HA state into the config repo + commit
+hac sync                                       # pull HA automations + all UI helpers → helpers/ + commit
+hac helper apply [dir]                         # push helpers/ back to HA (idempotent; skips existing)
+hac helper create template_sensor              # create a template sensor helper via config flow
+hac helper delete <object_id>                  # delete a helper by object_id
+hac sync-config                                # DEPRECATED: use hac sync instead
 ```
 
-More commands shipping in upcoming releases (`hac history`, `hac search`, `hac area`, `hac.deploy --commit` etc.) — see open issues.
+More commands shipping in upcoming releases (`hac history`, `hac search`, `hac area`, `hac deploy --commit` etc.) — see open issues.
 
 ## 🔧 Configuration
 
@@ -86,9 +90,14 @@ ha-config/
 │   ├── 光暗灯亮/
 │   ├── 光亮灯灭/
 │   └── 全屋模式/
+├── helpers/                    # UI helpers synced from HA (one file per domain)
+│   ├── input_boolean.yaml      #   manual-override flags
+│   ├── input_number.yaml       #   global variables & thresholds
+│   ├── input_text.yaml
+│   ├── template.yaml           #   template sensors (config-entry based)
+│   └── ...
 ├── scripts/                    # script configs
-├── scenes/                     # scene configs
-└── input_number.yaml           # global helpers
+└── scenes/                     # scene configs
 ```
 
 The subdirectory under `automations/` is treated as the HA category name — see [ADR-0003](docs/adr/0003-directory-as-category.md).
@@ -108,6 +117,7 @@ Architectural decisions live as short ADRs in [docs/adr/](docs/adr/):
 - [0001 — CLI-only](docs/adr/0001-cli-only.md): why MCP server was removed
 - [0002 — `hac deploy` doesn't auto-commit](docs/adr/0002-deploy-no-commit.md): orchestrator owns the commit
 - [0003 — Directory-as-category](docs/adr/0003-directory-as-category.md): subdirectory under `automations/` is the canonical HA category name
+- [0004 — Helper sync](docs/adr/0004-helper-sync.md): `hac sync` pulls all UI helpers; `hac helper apply` restores them
 
 ## 🔒 Security
 
