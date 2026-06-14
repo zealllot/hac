@@ -363,6 +363,69 @@ func (c *Client) ReloadAll() error {
 	return nil
 }
 
+// ConfigEntry is the subset of a config entry returned by the REST list endpoint.
+type ConfigEntry struct {
+	EntryID string `json:"entry_id"`
+	Domain  string `json:"domain"`
+	Title   string `json:"title"`
+	State   string `json:"state"`
+}
+
+// GetConfigEntriesByDomain lists config entries for one integration domain.
+// Used to enumerate config-entry helpers (e.g. template sensors).
+func (c *Client) GetConfigEntriesByDomain(domain string) ([]ConfigEntry, error) {
+	data, err := c.doRequest("GET", "/api/config/config_entries/entry?domain="+domain, nil)
+	if err != nil {
+		return nil, err
+	}
+	var entries []ConfigEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("unmarshal config entries (body=%q): %w", string(data), err)
+	}
+	return entries, nil
+}
+
+// ReadConfigEntryOptions reads the current stored options of a config entry by
+// starting its options flow and harvesting each field's suggested_value, then
+// aborting the flow. Works for helper config entries such as template sensors.
+func (c *Client) ReadConfigEntryOptions(entryID string) (map[string]any, error) {
+	data, err := c.doRequest("POST", "/api/config/config_entries/options/flow",
+		map[string]any{"handler": entryID})
+	if err != nil {
+		return nil, err
+	}
+	var form struct {
+		Type       string `json:"type"`
+		FlowID     string `json:"flow_id"`
+		DataSchema []struct {
+			Name        string `json:"name"`
+			Description struct {
+				SuggestedValue any `json:"suggested_value"`
+			} `json:"description"`
+		} `json:"data_schema"`
+	}
+	if err := json.Unmarshal(data, &form); err != nil {
+		return nil, fmt.Errorf("unmarshal options form (body=%q): %w", string(data), err)
+	}
+	if form.FlowID != "" {
+		// Best-effort cleanup; ignore error (flows expire on their own).
+		_ = c.AbortOptionsFlow(form.FlowID)
+	}
+	opts := make(map[string]any)
+	for _, f := range form.DataSchema {
+		if f.Name != "" && f.Description.SuggestedValue != nil {
+			opts[f.Name] = f.Description.SuggestedValue
+		}
+	}
+	return opts, nil
+}
+
+// AbortOptionsFlow cancels an in-progress options flow.
+func (c *Client) AbortOptionsFlow(flowID string) error {
+	_, err := c.doRequest("DELETE", "/api/config/config_entries/options/flow/"+flowID, nil)
+	return err
+}
+
 // WebSocket client for category management
 type WSClient struct {
 	conn  *websocket.Conn
