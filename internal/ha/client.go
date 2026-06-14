@@ -614,6 +614,15 @@ func (ws *WSClient) SetEntityName(entityID, name string) error {
 	return err
 }
 
+// SetEntityIcon sets an entity's icon override in the entity registry.
+func (ws *WSClient) SetEntityIcon(entityID, icon string) error {
+	_, err := ws.sendCommand("config/entity_registry/update", map[string]any{
+		"entity_id": entityID,
+		"icon":      icon,
+	})
+	return err
+}
+
 // DeleteConfigEntry removes a config entry (used to delete config-flow helpers
 // such as template sensors). Config-entry removal is REST-only — there is no
 // equivalent WebSocket command.
@@ -754,19 +763,12 @@ func (ws *WSClient) CreateInputNumber(name string, min, max, step, initial float
 	return "", fmt.Errorf("failed to get created entity_id")
 }
 
-// CreateTemplateSensor creates a persistent template sensor (a UI "Template" helper)
-// by driving its multi-step config flow over the REST API, and returns the id of
-// the config entry that was created.
-//
-// The template helper is a config-entry helper (unlike input_boolean, which is a
-// storage collection), so there is no single `*/create` WebSocket command — the
-// flow is: start (handler="template") → pick the "sensor" menu option → submit the
-// sensor form. Resolve the resulting entity_id afterwards via
-// ResolveEntityByConfigEntry, since the flow result returns the entry id, not the
-// entity_id (which HA derives by slugifying the name).
-func (c *Client) CreateTemplateSensor(name, stateTemplate, unit, deviceClass, icon string) (string, error) {
-	// Step 1: start the flow. The template integration first shows a menu of
-	// template types (sensor, binary_sensor, ...).
+// CreateTemplateSensor creates a template sensor (UI "Template" helper) by
+// driving its config flow, and returns the created config entry id. opts may
+// contain state, unit_of_measurement, device_class, state_class. `name` becomes
+// the entry title. Icon is NOT a config-flow field — set it separately on the
+// entity via SetEntityIcon after resolving the entity_id.
+func (c *Client) CreateTemplateSensor(name string, opts map[string]any) (string, error) {
 	start, err := c.startConfigFlow("template")
 	if err != nil {
 		return "", fmt.Errorf("start template flow: %w", err)
@@ -775,8 +777,6 @@ func (c *Client) CreateTemplateSensor(name, stateTemplate, unit, deviceClass, ic
 	if flowID == "" {
 		return "", fmt.Errorf("template flow returned no flow_id: %v", start)
 	}
-
-	// Step 2: choose the "sensor" menu option.
 	menu, err := c.configFlowStep(flowID, map[string]any{"next_step_id": "sensor"})
 	if err != nil {
 		return "", fmt.Errorf("select sensor step: %w", err)
@@ -784,27 +784,20 @@ func (c *Client) CreateTemplateSensor(name, stateTemplate, unit, deviceClass, ic
 	if ft, _ := menu["type"].(string); ft != "form" {
 		return "", fmt.Errorf("expected sensor form, got %v: %v", menu["type"], menu)
 	}
-
-	// Step 3: submit the sensor form.
-	form := map[string]any{
-		"name":  name,
-		"state": stateTemplate,
-	}
-	if unit != "" {
-		form["unit_of_measurement"] = unit
-	}
-	if deviceClass != "" {
-		form["device_class"] = deviceClass
+	form := map[string]any{"name": name}
+	for k, v := range opts {
+		if v == nil || v == "" {
+			continue
+		}
+		form[k] = v
 	}
 	done, err := c.configFlowStep(flowID, form)
 	if err != nil {
 		return "", fmt.Errorf("submit sensor form: %w", err)
 	}
 	if ft, _ := done["type"].(string); ft != "create_entry" {
-		// Surface validation errors from the form (e.g. invalid template).
 		return "", fmt.Errorf("template flow did not create entry (type=%v): %v", done["type"], done)
 	}
-
 	if result, ok := done["result"].(map[string]any); ok {
 		if entryID, ok := result["entry_id"].(string); ok {
 			return entryID, nil

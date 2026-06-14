@@ -239,11 +239,20 @@ func runHelper(args []string) {
 		created, err = ws.CreateInputBoolean(name, icon)
 	case "template_sensor":
 		// The template helper is a config-entry helper: create via its config flow
-		// (returns the entry id), then resolve the entity_id it spawned.
+		// (returns the entry id), resolve the entity_id it spawned, then set icon.
 		var entryID string
-		entryID, err = client.CreateTemplateSensor(name, state, unit, deviceClass, icon)
+		entryID, err = client.CreateTemplateSensor(name, map[string]any{
+			"state":               state,
+			"unit_of_measurement": unit,
+			"device_class":        deviceClass,
+		})
 		if err == nil {
 			created, err = ws.ResolveEntityByConfigEntry(entryID)
+		}
+		if err == nil && icon != "" {
+			if e := ws.SetEntityIcon(created, icon); e != nil {
+				fmt.Fprintf(os.Stderr, "Warning: created %s but failed to set icon: %v\n", created, e)
+			}
 		}
 	}
 	if err != nil {
