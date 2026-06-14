@@ -166,13 +166,18 @@ func runHelper(args []string) {
 	const usage = `Usage:
   hac helper create input_boolean <object_id> [--name "<name>"] [--icon "mdi:..."]
   hac helper create template_sensor <object_id> --state "<jinja template>" [--name "<name>"] [--unit "<unit>"] [--device-class "<class>"] [--icon "mdi:..."]
-  hac helper delete <entity_id>`
+  hac helper delete <entity_id>
+  hac helper apply [dir]   (default: <ConfigRepo>/helpers)`
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
 	if args[0] == "delete" {
 		runHelperDelete(args[1:])
+		return
+	}
+	if args[0] == "apply" {
+		runHelperApply(args[1:])
 		return
 	}
 	if args[0] != "create" {
@@ -329,6 +334,59 @@ func runHelperDelete(args []string) {
 	}
 
 	fmt.Printf("deleted %s\n", entityID)
+}
+
+func runHelperApply(args []string) {
+	flags, rest, err := cliflags.ParseWith("helper", args, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	dir := filepath.Join(cfg.ConfigRepo, "helpers")
+	if len(rest) > 0 {
+		dir = rest[0]
+	}
+
+	// Load every <stem>.yaml in dir into byDomain keyed by file stem.
+	byDomain := map[string]helpers.Manifest{}
+	for _, stem := range append(helpers.CollectionDomains(), "template_sensor") {
+		path := filepath.Join(dir, stem+".yaml")
+		m, err := helpers.ReadManifest(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(m) > 0 {
+			byDomain[stem] = m
+		}
+	}
+
+	client := getClient(flags.Timeout)
+	ws, err := client.NewWSClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer ws.Close()
+
+	rep := helpers.Applier{WS: ws, Client: client}.Apply(byDomain)
+	fmt.Printf("apply: created=%d skipped=%d failed=%d\n",
+		len(rep.Created), len(rep.Skipped), len(rep.Failed))
+	for _, id := range rep.Created {
+		fmt.Printf("  created %s\n", id)
+	}
+	for _, f := range rep.Failed {
+		fmt.Fprintf(os.Stderr, "  FAILED %s\n", f)
+	}
+	if len(rep.Failed) > 0 {
+		os.Exit(1)
+	}
 }
 
 func runHistory(args []string) {
