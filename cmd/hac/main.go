@@ -17,6 +17,7 @@ import (
 	"github.com/zealllot/hac/internal/config"
 	"github.com/zealllot/hac/internal/gitops"
 	"github.com/zealllot/hac/internal/ha"
+	"github.com/zealllot/hac/internal/helpers"
 	"github.com/zealllot/hac/internal/logbook"
 	"github.com/zealllot/hac/internal/render"
 	"github.com/zealllot/hac/internal/search"
@@ -770,8 +771,28 @@ func cmdSync(timeout time.Duration) {
 		fmt.Printf("  ! local-only (kept): %s\n", p)
 	}
 
+	// Capture UI helpers into <ConfigRepo>/helpers/<domain>.yaml.
+	cap := helpers.Capturer{WS: ws, Client: client}
+	byDomain, warns := cap.Capture()
+	for _, w := range warns {
+		fmt.Fprintf(os.Stderr, "Warning: helper capture: %s\n", w)
+	}
+	helpersDir := filepath.Join(cfg.ConfigRepo, "helpers")
+	if err := os.MkdirAll(helpersDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: create helpers dir: %v\n", err)
+	} else {
+		for domain, m := range byDomain {
+			path := filepath.Join(helpersDir, domain+".yaml")
+			if err := helpers.WriteManifest(path, m); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: write %s: %v\n", path, err)
+				continue
+			}
+			fmt.Printf("helpers: wrote %s (%d)\n", path, len(m))
+		}
+	}
+
 	// Git add + commit, preserving the historical "Sync automations from HA" message.
-	cmd := exec.Command("git", "add", "automations/")
+	cmd := exec.Command("git", "add", "automations/", "helpers/")
 	cmd.Dir = cfg.ConfigRepo
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: git add failed: %v\n", err)
