@@ -223,14 +223,6 @@ func (c *Client) DeleteAutomation(id string) error {
 	return err
 }
 
-// CreateTemplateSensor creates a template sensor via the HA config API
-// Note: This requires the template integration to be set up in configuration.yaml
-// or using the UI-based template helpers
-func (c *Client) CreateInputNumber(config map[string]any) error {
-	_, err := c.doRequest("POST", "/api/config/input_number", config)
-	return err
-}
-
 // SetState sets the state of an entity (useful for template sensors or input helpers)
 func (c *Client) SetState(entityID string, state string, attributes map[string]any) error {
 	body := map[string]any{
