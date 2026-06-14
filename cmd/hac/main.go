@@ -571,8 +571,11 @@ func cmdState(client *ha.Client, format string, args []string) error {
 }
 
 func cmdCall(client *ha.Client, domain, service, entityID, dataJSON string) error {
-	serviceData := map[string]any{
-		"entity_id": entityID,
+	serviceData := map[string]any{}
+	// Some services (reload_config_entry, reload_all, ...) take no entity_id and
+	// reject one; only include it when actually provided.
+	if entityID != "" {
+		serviceData["entity_id"] = entityID
 	}
 
 	if dataJSON != "" {
@@ -589,7 +592,11 @@ func cmdCall(client *ha.Client, domain, service, entityID, dataJSON string) erro
 		return err
 	}
 
-	fmt.Printf("✓ Called %s.%s on %s\n", domain, service, entityID)
+	if entityID != "" {
+		fmt.Printf("✓ Called %s.%s on %s\n", domain, service, entityID)
+	} else {
+		fmt.Printf("✓ Called %s.%s\n", domain, service)
+	}
 	return nil
 }
 
