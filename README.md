@@ -56,12 +56,21 @@ hac state <entity_id>                          # query a single entity's state
 hac call <domain> <service> <entity_id> [data] # call a service
 hac automations                                # list automations
 hac export <output_dir>                        # export all automations to YAML
-hac deploy <file_or_dir>                       # deploy YAML automation(s) to HA
-hac sync                                       # pull HA automations + all UI helpers → helpers/ + commit
+hac deploy <file_or_dir>                       # deploy YAML automation(s) to HA (auto-formats before push)
+hac fmt <file_or_dir>                          # format automation YAML in-place to canonical format
+hac fmt validate <file_or_dir>                 # check format only; non-zero exit if not formatted (use as pre-push gate)
+hac sync                                       # pull HA automations + all UI helpers → helpers/ + commit (auto-formats)
 hac helper apply [dir]                         # push helpers/ back to HA (idempotent; skips existing)
 hac helper create template_sensor              # create a template sensor helper via config flow
 hac helper delete <object_id>                  # delete a helper by object_id
 hac sync-config                                # DEPRECATED: use hac sync instead
+```
+
+Both `hac sync` and `hac deploy` automatically maintain the canonical format — no manual `hac fmt` needed in the normal workflow. To enforce the format in CI or on push, add a pre-push hook to your ha-config repo:
+
+```bash
+# ha-config/.git/hooks/pre-push
+hac fmt validate automations/
 ```
 
 More commands shipping in upcoming releases (`hac history`, `hac search`, `hac area`, `hac deploy --commit` etc.) — see open issues.
@@ -118,6 +127,7 @@ Architectural decisions live as short ADRs in [docs/adr/](docs/adr/):
 - [0002 — `hac deploy` doesn't auto-commit](docs/adr/0002-deploy-no-commit.md): orchestrator owns the commit
 - [0003 — Directory-as-category](docs/adr/0003-directory-as-category.md): subdirectory under `automations/` is the canonical HA category name
 - [0004 — Helper sync](docs/adr/0004-helper-sync.md): `hac sync` pulls all UI helpers; `hac helper apply` restores them
+- [0005 — Automation fmt](docs/adr/0005-automation-fmt.md): canonical YAML format F; `hac fmt`, `hac sync`, `hac deploy` all share one serialiser
 
 ## 🔒 Security
 
