@@ -572,6 +572,44 @@ func (ws *WSClient) DeleteCollectionHelper(domain, objectID string) error {
 	return err
 }
 
+// ListCollectionHelpers returns every item of a storage-collection helper
+// (input_boolean, input_number, ...). Each item is the raw config map and
+// includes an "id" key holding the object_id.
+func (ws *WSClient) ListCollectionHelpers(domain string) ([]map[string]any, error) {
+	result, err := ws.sendCommand(domain+"/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := result["result"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s/list: unexpected result type", domain)
+	}
+	items := make([]map[string]any, 0, len(raw))
+	for _, r := range raw {
+		if m, ok := r.(map[string]any); ok {
+			items = append(items, m)
+		}
+	}
+	return items, nil
+}
+
+// CreateCollectionHelper creates a storage-collection helper via <domain>/create
+// using the given config (name + type-specific fields, WITHOUT an "id" key) and
+// returns the entity_id HA assigned (domain + slugified name). Rename afterwards
+// to pin the desired object_id.
+func (ws *WSClient) CreateCollectionHelper(domain string, config map[string]any) (string, error) {
+	result, err := ws.sendCommand(domain+"/create", config)
+	if err != nil {
+		return "", err
+	}
+	if resultData, ok := result["result"].(map[string]any); ok {
+		if id, ok := resultData["id"].(string); ok {
+			return domain + "." + id, nil
+		}
+	}
+	return "", fmt.Errorf("%s/create: no id in result: %v", domain, result)
+}
+
 // CreateInputButton creates an input_button helper
 func (ws *WSClient) CreateInputButton(name, icon string) (string, error) {
 	data := map[string]any{
