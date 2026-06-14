@@ -782,6 +782,12 @@ func cmdDeploy(client *ha.Client, path string, opts deployOpts) error {
 func deployOne(client *ha.Client, ws *ha.WSClient, file string, opts deployOpts) render.DeployResult {
 	r := render.DeployResult{File: file}
 
+	// Keep the on-disk file in canonical format F so a later `hac sync` won't
+	// reformat it (single source of truth: autofmt.FormatAutomation).
+	if _, err := autofmt.FormatFile(file); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: fmt %s before deploy: %v\n", file, err)
+	}
+
 	data, err := os.ReadFile(file)
 	if err != nil {
 		r.Error = fmt.Sprintf("read: %v", err)
