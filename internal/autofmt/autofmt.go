@@ -112,5 +112,11 @@ func formatBytes(data []byte, path string) ([]byte, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if config == nil {
+		// Empty or comment-only file: nothing to format. Return the bytes
+		// unchanged so FormatFile is a no-op and IsFormatted reports true,
+		// rather than rewriting the file to "{}".
+		return data, nil
+	}
 	return FormatAutomation(config)
 }
