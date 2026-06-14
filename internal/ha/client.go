@@ -871,6 +871,7 @@ type EntityRegistryEntry struct {
 	Name          string            `json:"name,omitempty"`
 	OriginalName  string            `json:"original_name,omitempty"`
 	ConfigEntryID string            `json:"config_entry_id,omitempty"` // the config entry that owns this entity (config-flow helpers)
+	Icon          string            `json:"icon,omitempty"`
 	Categories    map[string]string `json:"categories,omitempty"`      // scope → categoryID, e.g. {"automation": "uuid-..."}
 }
 
@@ -954,6 +955,9 @@ func (ws *WSClient) GetEntityRegistry() ([]EntityRegistryEntry, error) {
 			}
 			if configEntryID, ok := em["config_entry_id"].(string); ok {
 				ent.ConfigEntryID = configEntryID
+			}
+			if icon, ok := em["icon"].(string); ok {
+				ent.Icon = icon
 			}
 			if cats, ok := em["categories"].(map[string]any); ok {
 				ent.Categories = make(map[string]string, len(cats))
