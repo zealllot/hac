@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"io/fs"
+
+	"github.com/zealllot/hac/internal/autofmt"
 	"github.com/zealllot/hac/internal/category"
 	"github.com/zealllot/hac/internal/cliflags"
 	"github.com/zealllot/hac/internal/config"
@@ -55,6 +58,10 @@ func main() {
 	}
 	if sub == "helper" {
 		runHelper(os.Args[2:])
+		return
+	}
+	if sub == "fmt" {
+		runFmt(os.Args[2:])
 		return
 	}
 
@@ -160,6 +167,85 @@ type deployOpts struct {
 	AutoCreateCategory bool
 	CommitMessage      string
 	Format             string
+}
+
+func runFmt(args []string) {
+	validate := false
+	rest := args
+	if len(rest) > 0 && rest[0] == "validate" {
+		validate = true
+		rest = rest[1:]
+	}
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: hac fmt [validate] <file_or_dir>")
+		os.Exit(1)
+	}
+
+	files, err := collectYAML(rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if validate {
+		var bad []string
+		for _, f := range files {
+			ok, err := autofmt.IsFormatted(f)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+				continue
+			}
+			if !ok {
+				bad = append(bad, f)
+			}
+		}
+		for _, f := range bad {
+			fmt.Fprintf(os.Stderr, "not formatted: %s\n", f)
+		}
+		if len(bad) > 0 {
+			fmt.Fprintf(os.Stderr, "%d file(s) need formatting; run `hac fmt %s`\n", len(bad), rest[0])
+			os.Exit(1)
+		}
+		fmt.Printf("all %d file(s) formatted\n", len(files))
+		return
+	}
+
+	var changed int
+	for _, f := range files {
+		ch, err := autofmt.FormatFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			continue
+		}
+		if ch {
+			changed++
+			fmt.Printf("formatted %s\n", f)
+		}
+	}
+	fmt.Printf("%d/%d file(s) changed\n", changed, len(files))
+}
+
+// collectYAML returns the .yaml file(s) at path: the file itself, or all
+// *.yaml under it recursively if it is a directory.
+func collectYAML(path string) ([]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return []string{path}, nil
+	}
+	var files []string
+	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(p, ".yaml") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	return files, err
 }
 
 func runHelper(args []string) {
